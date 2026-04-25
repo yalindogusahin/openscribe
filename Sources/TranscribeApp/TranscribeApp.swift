@@ -11,13 +11,14 @@ struct TranscribeApp: App {
             ContentView(vm: vm)
         }
         .commands {
-            CommandGroup(replacing: .newItem) {}
-            CommandMenu("File") {
+            // Sistem File menüsündeki "New" grubunu "Open…" ile değiştir
+            CommandGroup(replacing: .newItem) {
                 Button("Open…") {
                     NotificationCenter.default.post(name: .openFileRequested, object: nil)
                 }
                 .keyboardShortcut("o", modifiers: .command)
             }
+            // Loop menüsü
             CommandMenu("Loop") {
                 Button("Clear Loop") { vm.clearLoop() }
                     .keyboardShortcut(.escape, modifiers: [])

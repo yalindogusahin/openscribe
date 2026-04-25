@@ -17,10 +17,16 @@ public struct ContentView: View {
 
             TransportView(vm: vm)
         }
-        .onDrop(of: [.audio, .fileURL], isTargeted: nil) { providers in
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             guard let provider = providers.first else { return false }
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                guard let url = url else { return }
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                var url: URL?
+                if let data = item as? Data {
+                    url = URL(dataRepresentation: data, relativeTo: nil)
+                } else if let u = item as? URL {
+                    url = u
+                }
+                guard let url else { return }
                 DispatchQueue.main.async {
                     _ = url.startAccessingSecurityScopedResource()
                     vm.load(url: url)
