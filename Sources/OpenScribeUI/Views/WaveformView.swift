@@ -7,9 +7,10 @@ public struct WaveformView: View {
 
     // Internal drag state
     @State private var dragStart: Double? = nil
-    private enum DragMode { case newLoop, resizeStart, resizeEnd, moveLoop }
+    private enum DragMode { case newLoop, resizeStart, resizeEnd, moveLoop, pan }
     @State private var dragMode: DragMode = .newLoop
     @State private var moveAnchor: (loopStart: Double, loopEnd: Double, dragTime: Double)? = nil
+    @State private var panAnchor: Double = 0
     @State private var isDragging = false
 
     // Hit radius for loop edge handles
@@ -194,10 +195,12 @@ public struct WaveformView: View {
         if isDragging {
             switch dragMode {
             case .resizeStart, .resizeEnd: return .resizeLeftRight
-            case .moveLoop:               return .closedHand
+            case .moveLoop, .pan:         return .closedHand
             case .newLoop:                return .crosshair
             }
         }
+        // Option held (zoomed in) → hint at pan with an open hand.
+        if NSEvent.modifierFlags.contains(.option) && zoomLevel > 1 { return .openHand }
         guard let loop = vm.loop, vm.duration > 0 else { return .crosshair }
         let sx = timeToX(loop.start, width: width)
         let ex = timeToX(loop.end,   width: width)
@@ -220,6 +223,9 @@ public struct WaveformView: View {
                     dragStart  = Double(value.startLocation.x / width)
                     if dragMode == .moveLoop, let loop = vm.loop {
                         moveAnchor = (loop.start, loop.end, xToTime(value.startLocation.x, width: width))
+                    }
+                    if dragMode == .pan {
+                        panAnchor = vm.waveformPanOffset
                     }
                 }
 
@@ -248,6 +254,12 @@ public struct WaveformView: View {
                     let s = min(startTime, time)
                     let e = max(startTime, time)
                     if e > s { vm.setLoop(LoopRegion(start: s, end: e)) }
+
+                case .pan:
+                    // Drag right → reveal earlier content (pan offset decreases).
+                    let dragNorm = Double(value.translation.width / width) / zoomLevel
+                    let maxPan = max(0.0, 1.0 - 1.0 / zoomLevel)
+                    vm.waveformPanOffset = max(0.0, min(maxPan, panAnchor - dragNorm))
                 }
             }
             .onEnded { value in
@@ -268,6 +280,8 @@ public struct WaveformView: View {
     }
 
     private func detectDragMode(startX: CGFloat, width: CGFloat) -> DragMode {
+        // Option held → pan the visible window without touching the loop.
+        if NSEvent.modifierFlags.contains(.option) { return .pan }
         guard let loop = vm.loop, vm.duration > 0 else { return .newLoop }
         let sx = timeToX(loop.start, width: width)
         let ex = timeToX(loop.end,   width: width)
