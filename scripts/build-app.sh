@@ -16,6 +16,10 @@ mkdir -p "$BUNDLE/Contents/Resources"
 
 cp .build/release/OpenScribe "$BUNDLE/Contents/MacOS/OpenScribe"
 
+if [ -f "Resources/AppIcon.icns" ]; then
+    cp "Resources/AppIcon.icns" "$BUNDLE/Contents/Resources/AppIcon.icns"
+fi
+
 cat > "$BUNDLE/Contents/Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -29,6 +33,8 @@ cat > "$BUNDLE/Contents/Info.plist" << EOF
     <string>OpenScribe</string>
     <key>CFBundleDisplayName</key>
     <string>OpenScribe</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleVersion</key>
     <string>$VERSION</string>
     <key>CFBundleShortVersionString</key>

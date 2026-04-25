@@ -3,6 +3,7 @@ import SwiftUI
 
 public struct TransportView: View {
     @ObservedObject var vm: PlayerViewModel
+    @State private var showShortcuts = false
 
     public init(vm: PlayerViewModel) { self.vm = vm }
 
@@ -80,11 +81,36 @@ public struct TransportView: View {
 
             Divider().frame(height: 32)
 
-            // ---- Clear Loop ----
-            Button("Clear Loop") { vm.clearLoop() }
-                .disabled(vm.loop == nil)
+            // ---- Loop ----
+            VStack(alignment: .leading, spacing: 2) {
+                if let loop = vm.loop {
+                    Text("Loop: \(timeString(loop.start)) → \(timeString(loop.end))")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundColor(.secondary)
+                } else {
+                    Text("No loop")
+                        .font(.caption)
+                        .foregroundColor(.secondary.opacity(0.6))
+                }
+                Button("Clear Loop") { vm.clearLoop() }
+                    .disabled(vm.loop == nil)
+                    .font(.caption)
+            }
 
             Spacer()
+
+            // ---- Shortcuts cheatsheet ----
+            Button {
+                showShortcuts.toggle()
+            } label: {
+                Image(systemName: "questionmark.circle")
+                    .font(.system(size: 16))
+            }
+            .buttonStyle(.plain)
+            .help("Keyboard shortcuts")
+            .popover(isPresented: $showShortcuts, arrowEdge: .bottom) {
+                ShortcutsView()
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

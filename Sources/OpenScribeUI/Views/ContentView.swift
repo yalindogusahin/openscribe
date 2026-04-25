@@ -46,6 +46,7 @@ public struct ContentView: View {
             isFilePickerShown = true
         }
         .frame(minWidth: 700, minHeight: 220)
+        .navigationTitle(vm.loadedURL?.lastPathComponent ?? "OpenScribe")
     }
 
     /// Acquire sandbox scope before loading; PlayerViewModel releases it
