@@ -34,6 +34,7 @@ clang++ -std=c++20 -fobjc-arc \
     src/AudioEngine.mm \
     src/WaveformView.mm \
     src/TimelineRulerView.mm \
+    src/SettingsWindowController.mm \
     -o "build/$EXE_NAME"
 
 echo "Bundling..."

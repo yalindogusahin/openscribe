@@ -2,6 +2,7 @@
 #import "MainWindow.h"
 #import "AudioEngine.h"
 #import "WaveformView.h"
+#import "SettingsWindowController.h"
 
 #import <CommonCrypto/CommonCrypto.h>
 
@@ -29,6 +30,12 @@
 
 - (void)applicationDidFinishLaunching:(NSNotification*)notification {
     _engine = std::make_unique<AudioEngine>();
+
+    NSString* savedUID = [[NSUserDefaults standardUserDefaults]
+                          stringForKey:@"openscribe.outputDeviceUID"];
+    if (savedUID.length) {
+        _engine->setOutputDeviceUID(std::string(savedUID.UTF8String));
+    }
 
     [self installMenuBar];
 
@@ -159,6 +166,12 @@
     about.target = self;
     [appMenu addItem:about];
     [appMenu addItem:[NSMenuItem separatorItem]];
+    NSMenuItem* prefs = [[NSMenuItem alloc] initWithTitle:@"Settings…"
+                                                   action:@selector(showSettings:)
+                                            keyEquivalent:@","];
+    prefs.target = self;
+    [appMenu addItem:prefs];
+    [appMenu addItem:[NSMenuItem separatorItem]];
     [appMenu addItemWithTitle:@"Quit OpenScribe Native"
                        action:@selector(terminate:)
                 keyEquivalent:@"q"];
@@ -233,6 +246,13 @@
 - (void)clearRecentFiles:(id)sender {
     [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"openscribe.recentFiles"];
     [self rebuildRecentMenu];
+}
+
+- (void)showSettings:(id)sender {
+    (void)sender;
+    SettingsWindowController* c = [SettingsWindowController sharedController];
+    [c setEngine:_engine.get()];
+    [c showWindow];
 }
 
 - (void)showAboutPanel:(id)sender {

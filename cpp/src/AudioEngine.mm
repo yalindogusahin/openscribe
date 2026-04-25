@@ -1,9 +1,119 @@
 #import "AudioEngine.h"
 #import <Foundation/Foundation.h>
+#import <CoreAudio/CoreAudio.h>
 
 namespace {
 constexpr UInt32 kChannels = 2;
 constexpr UInt32 kBitsPerChannel = 32;
+
+AudioDeviceID DefaultOutputDeviceID() {
+    AudioDeviceID dev = kAudioObjectUnknown;
+    UInt32 sz = sizeof(dev);
+    AudioObjectPropertyAddress addr = {
+        kAudioHardwarePropertyDefaultOutputDevice,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain
+    };
+    AudioObjectGetPropertyData(kAudioObjectSystemObject, &addr,
+                               0, nullptr, &sz, &dev);
+    return dev;
+}
+
+bool DeviceHasOutputStreams(AudioDeviceID dev) {
+    AudioObjectPropertyAddress addr = {
+        kAudioDevicePropertyStreamConfiguration,
+        kAudioDevicePropertyScopeOutput,
+        kAudioObjectPropertyElementMain
+    };
+    UInt32 sz = 0;
+    if (AudioObjectGetPropertyDataSize(dev, &addr, 0, nullptr, &sz) != noErr) return false;
+    if (sz == 0) return false;
+    std::vector<uint8_t> buf(sz);
+    auto* bl = reinterpret_cast<AudioBufferList*>(buf.data());
+    if (AudioObjectGetPropertyData(dev, &addr, 0, nullptr, &sz, bl) != noErr) return false;
+    UInt32 ch = 0;
+    for (UInt32 i = 0; i < bl->mNumberBuffers; ++i) ch += bl->mBuffers[i].mNumberChannels;
+    return ch > 0;
+}
+
+std::string CFStringToStd(CFStringRef s) {
+    if (!s) return {};
+    char buf[512] = {0};
+    if (CFStringGetCString(s, buf, sizeof(buf), kCFStringEncodingUTF8)) return std::string(buf);
+    return {};
+}
+
+std::string DeviceUIDString(AudioDeviceID dev) {
+    CFStringRef uid = nullptr;
+    UInt32 sz = sizeof(uid);
+    AudioObjectPropertyAddress addr = {
+        kAudioDevicePropertyDeviceUID,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain
+    };
+    if (AudioObjectGetPropertyData(dev, &addr, 0, nullptr, &sz, &uid) != noErr) return {};
+    std::string out = CFStringToStd(uid);
+    if (uid) CFRelease(uid);
+    return out;
+}
+
+std::string DeviceNameString(AudioDeviceID dev) {
+    CFStringRef name = nullptr;
+    UInt32 sz = sizeof(name);
+    AudioObjectPropertyAddress addr = {
+        kAudioObjectPropertyName,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain
+    };
+    if (AudioObjectGetPropertyData(dev, &addr, 0, nullptr, &sz, &name) != noErr) return {};
+    std::string out = CFStringToStd(name);
+    if (name) CFRelease(name);
+    return out;
+}
+
+AudioDeviceID DeviceIDForUID(const std::string& uid) {
+    if (uid.empty()) return DefaultOutputDeviceID();
+    AudioObjectPropertyAddress addr = {
+        kAudioHardwarePropertyDevices,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain
+    };
+    UInt32 sz = 0;
+    if (AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &addr,
+                                       0, nullptr, &sz) != noErr) return kAudioObjectUnknown;
+    UInt32 count = sz / sizeof(AudioDeviceID);
+    std::vector<AudioDeviceID> ids(count);
+    if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &addr,
+                                   0, nullptr, &sz, ids.data()) != noErr) return kAudioObjectUnknown;
+    for (auto id : ids) {
+        if (DeviceUIDString(id) == uid) return id;
+    }
+    return kAudioObjectUnknown;
+}
+}
+
+std::vector<AudioEngine::DeviceInfo> AudioEngine::listOutputDevices() {
+    std::vector<DeviceInfo> out;
+    AudioObjectPropertyAddress addr = {
+        kAudioHardwarePropertyDevices,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain
+    };
+    UInt32 sz = 0;
+    if (AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &addr,
+                                       0, nullptr, &sz) != noErr) return out;
+    UInt32 count = sz / sizeof(AudioDeviceID);
+    std::vector<AudioDeviceID> ids(count);
+    if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &addr,
+                                   0, nullptr, &sz, ids.data()) != noErr) return out;
+    for (auto id : ids) {
+        if (!DeviceHasOutputStreams(id)) continue;
+        DeviceInfo info;
+        info.uid = DeviceUIDString(id);
+        info.name = DeviceNameString(id);
+        if (!info.uid.empty()) out.push_back(info);
+    }
+    return out;
 }
 
 AudioEngine::AudioEngine() {
@@ -28,14 +138,22 @@ bool AudioEngine::setupOutputUnit() {
     fmt.mBytesPerFrame = kBitsPerChannel / 8;
     fmt.mBytesPerPacket = fmt.mBytesPerFrame;
 
-    // 1. Default output unit.
+    // 1. HAL output unit (lets us pick a specific device).
     AudioComponentDescription outDesc = {};
     outDesc.componentType = kAudioUnitType_Output;
-    outDesc.componentSubType = kAudioUnitSubType_DefaultOutput;
+    outDesc.componentSubType = kAudioUnitSubType_HALOutput;
     outDesc.componentManufacturer = kAudioUnitManufacturer_Apple;
     AudioComponent outComp = AudioComponentFindNext(nullptr, &outDesc);
     if (!outComp) return false;
     if (AudioComponentInstanceNew(outComp, &outputUnit_) != noErr) return false;
+
+    // HAL needs a device assigned before initialize. Default to system output.
+    AudioDeviceID dev = DefaultOutputDeviceID();
+    if (dev != kAudioObjectUnknown) {
+        AudioUnitSetProperty(outputUnit_, kAudioOutputUnitProperty_CurrentDevice,
+                             kAudioUnitScope_Global, 0, &dev, sizeof(dev));
+        currentDeviceUID_ = DeviceUIDString(dev);
+    }
 
     // 2. NewTimePitch — pitch-preserving rate change.
     AudioComponentDescription tpDesc = {};
@@ -211,6 +329,31 @@ double AudioEngine::currentTime() const {
 
 bool AudioEngine::isPlaying() const {
     return playing_.load();
+}
+
+bool AudioEngine::setOutputDeviceUID(const std::string& uid) {
+    AudioDeviceID dev = DeviceIDForUID(uid);
+    if (dev == kAudioObjectUnknown) return false;
+    if (!outputUnit_) return false;
+
+    bool wasPlaying = playing_.load();
+    AudioOutputUnitStop(outputUnit_);
+    AudioUnitUninitialize(outputUnit_);
+
+    OSStatus s = AudioUnitSetProperty(outputUnit_,
+                                      kAudioOutputUnitProperty_CurrentDevice,
+                                      kAudioUnitScope_Global, 0,
+                                      &dev, sizeof(dev));
+    if (s != noErr) NSLog(@"set device fail: %d", (int)s);
+
+    AudioUnitInitialize(outputUnit_);
+    if (wasPlaying) AudioOutputUnitStart(outputUnit_);
+    currentDeviceUID_ = uid.empty() ? DeviceUIDString(dev) : uid;
+    return s == noErr;
+}
+
+std::string AudioEngine::currentOutputDeviceUID() const {
+    return currentDeviceUID_;
 }
 
 void AudioEngine::setSpeed(double rate) {

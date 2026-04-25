@@ -37,6 +37,18 @@ public:
     bool isPlaying() const;
     double sampleRate() const { return sampleRate_; }
 
+    // Output device routing. Empty UID = system default output.
+    // Returns true if the device was found and set; false on lookup failure
+    // (engine continues running on its previous device in that case).
+    bool setOutputDeviceUID(const std::string& uid);
+    std::string currentOutputDeviceUID() const;
+
+    struct DeviceInfo {
+        std::string uid;
+        std::string name;
+    };
+    static std::vector<DeviceInfo> listOutputDevices();
+
     // Read-only view for waveform rendering. Stable as long as no load() runs.
     const float* samplesPtr() const { return samples_.data(); }
     int64_t frameCount() const { return totalFrames_; }
@@ -61,6 +73,7 @@ private:
 
     AudioUnit outputUnit_ = nullptr;
     AudioUnit timePitch_ = nullptr;
+    std::string currentDeviceUID_;
     double sampleRate_ = 48000.0;
     double speed_ = 1.0;
     double pitch_ = 0.0;
