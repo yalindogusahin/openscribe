@@ -1,6 +1,6 @@
 import Foundation
 
-public struct LoopRegion: Equatable {
+public struct LoopRegion: Equatable, Codable {
     public var start: TimeInterval
     public var end: TimeInterval
 

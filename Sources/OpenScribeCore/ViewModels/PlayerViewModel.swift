@@ -13,16 +13,16 @@ public final class PlayerViewModel: ObservableObject {
     @Published public private(set) var loop: LoopRegion?
     @Published public private(set) var loadedURL: URL?
     @Published public var speed: Float = 1.0 {
-        didSet { engine.setSpeed(speed) }
+        didSet { engine.setSpeed(speed); persist() }
     }
     @Published public var pitch: Float = 0.0 {
-        didSet { engine.setPitch(pitch) }
+        didSet { engine.setPitch(pitch); persist() }
     }
 
     // MARK: – Waveform zoom (managed here so the app-level scroll monitor can update it)
 
-    @Published public var waveformZoomLevel: Double = 1.0
-    @Published public var waveformPanOffset: Double = 0.0
+    @Published public var waveformZoomLevel: Double = 1.0 { didSet { persist() } }
+    @Published public var waveformPanOffset: Double = 0.0 { didSet { persist() } }
     /// Waveform frame in window coordinates — updated by WaveformView, read by scroll monitor
     public var waveformWindowFrame: CGRect = .zero
 
@@ -73,10 +73,43 @@ public final class PlayerViewModel: ObservableObject {
             scopedURL?.stopAccessingSecurityScopedResource()
             scopedURL = url
             loadedURL = url
+            restoreState(for: url)
             Task { await reloadWaveform(url: url) }
         } catch {
             print("AudioEngine load error: \(error)")
         }
+    }
+
+    private func restoreState(for url: URL) {
+        guard let state = FileStateStore.load(for: url) else { return }
+        // Suspend persistence while we hydrate published properties.
+        isRestoring = true
+        defer { isRestoring = false }
+        waveformZoomLevel = state.zoom
+        waveformPanOffset = state.pan
+        speed = state.speed
+        pitch = state.pitch
+        if let region = state.loop {
+            setLoop(region)
+        }
+        if state.lastTime > 0 && state.lastTime < duration {
+            seek(to: state.lastTime)
+        }
+    }
+
+    private var isRestoring = false
+
+    private func persist() {
+        guard !isRestoring, let url = loadedURL else { return }
+        let state = FileState(
+            loop: loop,
+            zoom: waveformZoomLevel,
+            pan: waveformPanOffset,
+            speed: speed,
+            pitch: pitch,
+            lastTime: currentTime
+        )
+        FileStateStore.save(state, for: url)
     }
 
     @MainActor
@@ -101,6 +134,7 @@ public final class PlayerViewModel: ObservableObject {
     public func pause() {
         engine.pause()
         isPlaying = false
+        persist()
     }
 
     public func stop() {
@@ -112,6 +146,7 @@ public final class PlayerViewModel: ObservableObject {
     public func seek(to time: TimeInterval) {
         engine.seek(to: time)
         currentTime = time
+        persist()
     }
 
     // MARK: – Loop
@@ -120,11 +155,13 @@ public final class PlayerViewModel: ObservableObject {
         let clamped = region.clamped(to: duration)
         loop = clamped
         engine.setLoop(clamped)
+        persist()
     }
 
     public func clearLoop() {
         loop = nil
         engine.clearLoop()
+        persist()
     }
 
     public func setLoopStart(at time: TimeInterval) {
