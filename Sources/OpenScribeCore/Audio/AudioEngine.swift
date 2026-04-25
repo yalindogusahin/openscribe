@@ -23,18 +23,19 @@ public final class AudioEngine {
     private var totalFrames: AVAudioFramePosition = 0
     private var sampleRate: Double = 44100
 
-    // Oynatma durumu
+    // Playback state
     public private(set) var isPlaying = false
-    private var currentFrame: AVAudioFramePosition = 0  // son seek pozisyonu
+    private var currentFrame: AVAudioFramePosition = 0      // last known frame position
+    private var anchorSampleTime: Int64 = 0                 // sampleTime when currentFrame was last set
 
     // Loop
     public private(set) var loop: LoopRegion?
 
-    // Hız & Pitch
+    // Speed & Pitch
     public private(set) var speed: Float = 1.0
     public private(set) var pitch: Float = 0.0
 
-    // Timer → delegate çağrısı
+    // Timer → position delegate calls
     private var positionTimer: Timer?
 
     // MARK: Init
@@ -46,7 +47,7 @@ public final class AudioEngine {
         engine.connect(timePitchNode, to: engine.mainMixerNode, format: nil)
     }
 
-    // MARK: – Dosya yükleme
+    // MARK: – File loading
 
     public func load(url: URL) throws {
         stop()
@@ -57,7 +58,7 @@ public final class AudioEngine {
         currentFrame = 0
         loop = nil
 
-        // Engine'i bu dosyanın formatıyla yeniden bağla
+        // Reconnect playerNode with the file's format
         engine.disconnectNodeOutput(playerNode)
         engine.connect(playerNode, to: timePitchNode, format: file.processingFormat)
 
@@ -85,8 +86,10 @@ public final class AudioEngine {
     }
 
     public func pause() {
-        playerNode.pause()
+        // Capture position before pausing
         currentFrame = currentFrameFromNode()
+        captureAnchor()
+        playerNode.pause()
         isPlaying = false
         stopPositionTimer()
     }
@@ -94,6 +97,7 @@ public final class AudioEngine {
     public func stop() {
         playerNode.stop()
         currentFrame = 0
+        anchorSampleTime = 0   // sampleTime resets to 0 after stop
         isPlaying = false
         stopPositionTimer()
     }
@@ -103,6 +107,7 @@ public final class AudioEngine {
         playerNode.stop()
         currentFrame = AVAudioFramePosition(time * sampleRate)
         currentFrame = max(0, min(currentFrame, totalFrames))
+        anchorSampleTime = 0   // sampleTime resets after stop
         if wasPlaying, let file = audioFile {
             scheduleSegment(from: currentFrame, file: file)
             playerNode.play()
@@ -122,7 +127,7 @@ public final class AudioEngine {
         loop = nil
     }
 
-    // MARK: – Hız & Pitch
+    // MARK: – Speed & Pitch
 
     public func setSpeed(_ value: Float) {
         speed = max(0.25, min(4.0, value))
@@ -138,7 +143,7 @@ public final class AudioEngine {
 
     private func applyTimePitch() {
         timePitchNode.rate = speed
-        timePitchNode.pitch = pitch * 100  // AVAudioUnitTimePitch cents kullanıyor
+        timePitchNode.pitch = pitch * 100  // AVAudioUnitTimePitch uses cents
     }
 
     private func scheduleSegment(from startFrame: AVAudioFramePosition, file: AVAudioFile) {
@@ -162,9 +167,10 @@ public final class AudioEngine {
             DispatchQueue.main.async {
                 if self.isPlaying {
                     if self.loop != nil {
-                        // Loop: başa dön
+                        // Loop: restart — update anchor so position reads correctly from sampleTime
                         let loopStart = AVAudioFramePosition((self.loop?.start ?? 0) * self.sampleRate)
-                        self.currentFrame = loopStart  // playhead'i sıfırla
+                        self.currentFrame = loopStart
+                        self.captureAnchor()
                         self.scheduleSegment(from: loopStart, file: file)
                     } else {
                         self.isPlaying = false
@@ -181,7 +187,8 @@ public final class AudioEngine {
         guard let nodeTime = playerNode.lastRenderTime,
               let playerTime = playerNode.playerTime(forNodeTime: nodeTime)
         else { return nil }
-        let frame = currentFrame + playerTime.sampleTime
+        let elapsed = playerTime.sampleTime - anchorSampleTime
+        let frame = currentFrame + elapsed
         return Double(max(0, frame)) / sampleRate
     }
 
@@ -189,7 +196,16 @@ public final class AudioEngine {
         guard let nodeTime = playerNode.lastRenderTime,
               let playerTime = playerNode.playerTime(forNodeTime: nodeTime)
         else { return currentFrame }
-        return max(0, currentFrame + playerTime.sampleTime)
+        let elapsed = playerTime.sampleTime - anchorSampleTime
+        return max(0, currentFrame + elapsed)
+    }
+
+    /// Save current sampleTime as the anchor for position calculations
+    private func captureAnchor() {
+        guard let nodeTime = playerNode.lastRenderTime,
+              let pt = playerNode.playerTime(forNodeTime: nodeTime)
+        else { return }
+        anchorSampleTime = pt.sampleTime
     }
 
     // MARK: – Timer

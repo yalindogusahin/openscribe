@@ -2,7 +2,7 @@ import AVFoundation
 import Foundation
 
 public struct WaveformAnalyzer {
-    /// Ses dosyasından `pixelCount` adet (min, max) peak çifti üretir.
+    /// Reads the audio file and produces `pixelCount` (min, max) peak pairs.
     public static func peaks(from url: URL, pixelCount: Int) throws -> [(min: Float, max: Float)] {
         let file = try AVAudioFile(forReading: url)
         let frameCount = AVAudioFrameCount(file.length)

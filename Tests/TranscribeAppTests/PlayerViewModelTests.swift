@@ -1,9 +1,9 @@
 import XCTest
 @testable import OpenScribeModels
 
-// PlayerViewModel AVFoundation gerektirdiğinden swift test ortamında
-// doğrudan test edilemiyor. İş mantığı testleri LoopRegionTests'te.
-// Bu dosya ileride mock AudioEngine ile genişletilebilir.
+// PlayerViewModel requires AVFoundation and cannot be tested directly in swift test.
+// Business logic tests live in LoopRegionTests.
+// This file can be extended with a mock AudioEngine in the future.
 final class PlayerViewModelTests: XCTestCase {
 
     func test_loopRegion_timeRatioWithZeroDuration() {

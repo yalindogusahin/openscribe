@@ -40,7 +40,7 @@ public struct ContentView: View {
             allowsMultipleSelection: false
         ) { result in
             if case .success(let urls) = result, let url = urls.first {
-                // Sandbox erişimi için güvenlik kapsamı
+                // Security-scoped resource access for sandbox
                 if url.startAccessingSecurityScopedResource() {
                     vm.load(url: url)
                 }

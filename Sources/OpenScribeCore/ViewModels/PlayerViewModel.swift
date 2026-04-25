@@ -3,7 +3,7 @@ import Combine
 import Foundation
 
 public final class PlayerViewModel: ObservableObject {
-    // MARK: – Yayınlanan durum
+    // MARK: – Published state
 
     @Published public private(set) var isPlaying = false
     @Published public private(set) var currentTime: TimeInterval = 0
@@ -18,7 +18,7 @@ public final class PlayerViewModel: ObservableObject {
         didSet { engine.setPitch(pitch) }
     }
 
-    // Waveform için pixel genişliği (View'dan ayarlanır)
+    // Pixel width for waveform rendering (set by the View)
     public var waveformWidth: Int = 800 {
         didSet {
             if oldValue != waveformWidth, let url = loadedURL {
@@ -27,7 +27,7 @@ public final class PlayerViewModel: ObservableObject {
         }
     }
 
-    // MARK: – Özel
+    // MARK: – Private
 
     private let engine = AudioEngine()
 
@@ -35,7 +35,7 @@ public final class PlayerViewModel: ObservableObject {
         engine.delegate = self
     }
 
-    // MARK: – Dosya açma
+    // MARK: – File loading
 
     public func load(url: URL) {
         do {
@@ -94,7 +94,7 @@ public final class PlayerViewModel: ObservableObject {
         engine.clearLoop()
     }
 
-    // MARK: – Yardımcı
+    // MARK: – Helpers
 
     public func timeRatio(for time: TimeInterval) -> Double {
         guard duration > 0 else { return 0 }

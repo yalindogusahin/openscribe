@@ -1,2 +1,2 @@
-// LoopRegion OpenScribeModels'da tanımlı — buradan re-export edelim
+// LoopRegion is defined in OpenScribeModels — re-export it from here
 @_exported import OpenScribeModels

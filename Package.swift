@@ -5,7 +5,7 @@ let package = Package(
     name: "OpenScribe",
     platforms: [.macOS(.v13)],
     targets: [
-        // Saf Swift modeller — bağımlılık yok, test edilebilir
+        // Pure Swift models — no dependencies, fully testable
         .target(
             name: "OpenScribeModels",
             path: "Sources/OpenScribeModels"
@@ -22,13 +22,13 @@ let package = Package(
             dependencies: ["OpenScribeCore"],
             path: "Sources/OpenScribeUI"
         ),
-        // Sadece giriş noktası
+        // Entry point only
         .executableTarget(
             name: "OpenScribe",
             dependencies: ["OpenScribeCore", "OpenScribeUI"],
             path: "Sources/TranscribeApp"
         ),
-        // Test target: sadece saf Swift modeller — AVFoundation yüklenmez
+        // Test target: pure Swift models only — AVFoundation is not loaded
         .testTarget(
             name: "TranscribeAppTests",
             dependencies: ["OpenScribeModels"],

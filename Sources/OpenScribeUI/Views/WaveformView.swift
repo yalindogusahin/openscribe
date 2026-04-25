@@ -4,7 +4,7 @@ import SwiftUI
 public struct WaveformView: View {
     @ObservedObject var vm: PlayerViewModel
 
-    // Gesture için iç durum
+    // Internal drag state
     @State private var dragStart: Double? = nil
 
     public init(vm: PlayerViewModel) { self.vm = vm }
@@ -25,9 +25,15 @@ public struct WaveformView: View {
                     Button {
                         NotificationCenter.default.post(name: .openFileRequested, object: nil)
                     } label: {
-                        Label("Open an audio file", systemImage: "music.note")
+                        Label("Open an audio file  (⌘O)", systemImage: "music.note")
                             .font(.system(size: 14))
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.white.opacity(0.6))
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.white.opacity(0.25), lineWidth: 1)
+                            )
                     }
                     .buttonStyle(.plain)
                 }
@@ -37,7 +43,7 @@ public struct WaveformView: View {
         .background(Color(red: 0.12, green: 0.12, blue: 0.12))
     }
 
-    // MARK: – Çizim
+    // MARK: – Drawing
 
     private func drawBackground(ctx: GraphicsContext, size: CGSize) {
         ctx.fill(Path(CGRect(origin: .zero, size: size)),
@@ -68,12 +74,12 @@ public struct WaveformView: View {
         let x1 = CGFloat(loop.start / vm.duration) * size.width
         let x2 = CGFloat(loop.end / vm.duration) * size.width
 
-        // Yarı saydam bölge
+        // Semi-transparent fill
         ctx.fill(
             Path(CGRect(x: x1, y: 0, width: x2 - x1, height: size.height)),
             with: .color(Color.blue.opacity(0.25))
         )
-        // Kenar çizgileri
+        // Border lines
         var border = Path()
         border.move(to: CGPoint(x: x1, y: 0)); border.addLine(to: CGPoint(x: x1, y: size.height))
         border.move(to: CGPoint(x: x2, y: 0)); border.addLine(to: CGPoint(x: x2, y: size.height))
@@ -89,7 +95,7 @@ public struct WaveformView: View {
         ctx.stroke(path, with: .color(.red), lineWidth: 2)
     }
 
-    // MARK: – Gesture
+    // MARK: – Gestures
 
     private func dragGesture(width: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 4)
@@ -110,7 +116,7 @@ public struct WaveformView: View {
                 let ratio = min(1, max(0, Double(value.location.x / width)))
                 let distance = abs(value.translation.width)
                 if distance < 4 {
-                    // Kısa tıklama → seek
+                    // Short tap → seek
                     vm.clearLoop()
                     vm.seek(to: ratio * vm.duration)
                 }
