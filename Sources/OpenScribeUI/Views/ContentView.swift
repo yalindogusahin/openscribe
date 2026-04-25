@@ -45,7 +45,7 @@ public struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .openFileRequested)) { _ in
             isFilePickerShown = true
         }
-        .frame(minWidth: 700, minHeight: 220)
+        .frame(minWidth: 540, minHeight: 260)
         .navigationTitle(vm.loadedURL?.lastPathComponent ?? "OpenScribe")
     }
 
