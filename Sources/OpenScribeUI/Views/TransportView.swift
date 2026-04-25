@@ -44,11 +44,10 @@ public struct TransportView: View {
                 VStack(alignment: .center, spacing: 2) {
                     Text("Speed: \(String(format: "%.2f", vm.speed))×")
                         .font(.caption)
+                        .contentShape(Rectangle())
+                        .onTapGesture(count: 2) { vm.speed = 1.0 }
                     Slider(value: $vm.speed, in: 0.25...2.0, step: 0.05)
                         .frame(width: 140)
-                        .simultaneousGesture(
-                            TapGesture(count: 2).onEnded { vm.speed = 1.0 }
-                        )
                 }
                 Button("+") {
                     vm.speed = min(2.0, round((vm.speed + 0.1) * 100) / 100)
@@ -68,11 +67,10 @@ public struct TransportView: View {
                     let sign = vm.pitch > 0 ? "+" : ""
                     Text("Pitch: \(sign)\(Int(vm.pitch)) st")
                         .font(.caption)
+                        .contentShape(Rectangle())
+                        .onTapGesture(count: 2) { vm.pitch = 0 }
                     Slider(value: $vm.pitch, in: -12...12, step: 1)
                         .frame(width: 140)
-                        .simultaneousGesture(
-                            TapGesture(count: 2).onEnded { vm.pitch = 0 }
-                        )
                 }
                 Button("+") {
                     vm.pitch = min(12, vm.pitch + 1)
