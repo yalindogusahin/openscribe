@@ -58,9 +58,15 @@ public final class AudioEngine {
         currentFrame = 0
         loop = nil
 
-        // Reconnect playerNode with the file's format
+        // Re-wire the entire chain at the file's format. If only the input
+        // edge is reconnected, timePitchNode → mainMixerNode keeps whatever
+        // format was set up at engine init (typically 44.1 kHz canonical).
+        // A 48 kHz file (common for YouTube extractions) then plays through
+        // an implicit sample-rate converter and pitches up by ~1.5 semitones.
         engine.disconnectNodeOutput(playerNode)
+        engine.disconnectNodeOutput(timePitchNode)
         engine.connect(playerNode, to: timePitchNode, format: file.processingFormat)
+        engine.connect(timePitchNode, to: engine.mainMixerNode, format: file.processingFormat)
 
         try engine.start()
         applyTimePitch()
