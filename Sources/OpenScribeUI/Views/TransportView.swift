@@ -31,7 +31,7 @@ public struct TransportView: View {
             // ---- Süre ----
             Text(timeString(vm.currentTime) + " / " + timeString(vm.duration))
                 .font(.system(.body, design: .monospaced))
-                .frame(width: 120, alignment: .leading)
+                .frame(width: 180, alignment: .leading)
 
             Divider().frame(height: 32)
 
@@ -81,7 +81,9 @@ public struct TransportView: View {
     }
 
     private func timeString(_ t: TimeInterval) -> String {
-        let s = Int(t)
-        return String(format: "%02d:%02d", s / 60, s % 60)
+        let total = max(0, t)
+        let whole = Int(total)
+        let ms    = Int((total - Double(whole)) * 1000)
+        return String(format: "%02d:%02d.%03d", whole / 60, whole % 60, ms)
     }
 }
