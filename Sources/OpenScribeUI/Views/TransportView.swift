@@ -81,6 +81,20 @@ public struct TransportView: View {
 
             Divider().frame(height: 32)
 
+            // ---- Volume ----
+            HStack(spacing: 6) {
+                Image(systemName: vm.volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                    .foregroundColor(.secondary)
+                    .font(.system(size: 12))
+                    .frame(width: 16)
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) { vm.volume = 1.0 }
+                Slider(value: $vm.volume, in: 0...1)
+                    .frame(width: 80)
+            }
+
+            Divider().frame(height: 32)
+
             // ---- Loop ----
             VStack(alignment: .leading, spacing: 2) {
                 if let loop = vm.loop {

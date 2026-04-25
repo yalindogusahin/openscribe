@@ -61,10 +61,26 @@ private class KeyboardShortcutService {
                 DispatchQueue.main.async { vm.seek(to: vm.loop?.start ?? 0) }
             case 53: // Escape — clear loop
                 DispatchQueue.main.async { vm.clearLoop() }
-            case 33: // [ — set loop start at playhead
-                DispatchQueue.main.async { vm.setLoopStart(at: vm.currentTime) }
-            case 30: // ] — set loop end at playhead
-                DispatchQueue.main.async { vm.setLoopEnd(at: vm.currentTime) }
+            case 33: // [ — set loop start at playhead (Shift = nudge -50ms)
+                if event.modifierFlags.contains(.shift) {
+                    DispatchQueue.main.async { vm.nudgeLoopStart(by: -0.05) }
+                } else {
+                    DispatchQueue.main.async { vm.setLoopStart(at: vm.currentTime) }
+                }
+            case 30: // ] — set loop end at playhead (Shift = nudge +50ms)
+                if event.modifierFlags.contains(.shift) {
+                    DispatchQueue.main.async { vm.nudgeLoopEnd(by: 0.05) }
+                } else {
+                    DispatchQueue.main.async { vm.setLoopEnd(at: vm.currentTime) }
+                }
+            case 11: // B — toggle bookmark at playhead
+                DispatchQueue.main.async { vm.toggleBookmark(at: vm.currentTime) }
+            case 18, 19, 20, 21, 22, 23, 25, 26, 28:
+                // 1...9 → jump to bookmark N (no modifiers)
+                let map: [UInt16: Int] = [18:0, 19:1, 20:2, 21:3, 23:4, 22:5, 26:6, 28:7, 25:8]
+                if let idx = map[event.keyCode] {
+                    DispatchQueue.main.async { vm.jumpToBookmark(idx) }
+                }
             default:
                 break
             }
@@ -85,6 +101,13 @@ private let sharedKeyboard = KeyboardShortcutService()
 @main
 struct OpenScribeApp: App {
     @StateObject private var vm = PlayerViewModel()
+    @State private var recentRefresh = 0  // bumped to force the Recent menu to rebuild
+
+    private func openRecent(_ url: URL) {
+        _ = url.startAccessingSecurityScopedResource()
+        vm.load(url: url)
+        recentRefresh &+= 1
+    }
 
     init() {
         // Suppress macOS system beep on unhandled key events (must run before any window is created).
@@ -98,13 +121,45 @@ struct OpenScribeApp: App {
         WindowGroup {
             ContentView(vm: vm)
                 .onAppear { sharedKeyboard.vm = vm }
+                .onChange(of: vm.loadedURL) { _ in recentRefresh &+= 1 }
         }
         .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button("About OpenScribe") {
+                    let credits = NSAttributedString(
+                        string: "Free macOS audio loop player.\nhttps://github.com/yalindogusahin/openscribe",
+                        attributes: [
+                            .font: NSFont.systemFont(ofSize: 11),
+                            .foregroundColor: NSColor.secondaryLabelColor
+                        ]
+                    )
+                    NSApp.orderFrontStandardAboutPanel(options: [
+                        NSApplication.AboutPanelOptionKey.credits: credits
+                    ])
+                }
+            }
             CommandGroup(replacing: .newItem) {
                 Button("Open…") {
                     NotificationCenter.default.post(name: .openFileRequested, object: nil)
                 }
                 .keyboardShortcut("o", modifiers: .command)
+
+                Menu("Open Recent") {
+                    let _ = recentRefresh  // re-evaluates when bumped
+                    let recents = RecentFilesStore.urls()
+                    if recents.isEmpty {
+                        Text("No recent files").disabled(true)
+                    } else {
+                        ForEach(recents, id: \.self) { url in
+                            Button(url.lastPathComponent) { openRecent(url) }
+                        }
+                        Divider()
+                        Button("Clear Menu") {
+                            RecentFilesStore.clear()
+                            recentRefresh &+= 1
+                        }
+                    }
+                }
             }
             CommandMenu("Loop") {
                 // Escape is handled in KeyboardShortcutService to avoid the SwiftUI

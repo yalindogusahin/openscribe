@@ -12,11 +12,15 @@ public final class PlayerViewModel: ObservableObject {
     @Published public private(set) var waveformPeaks: [(min: Float, max: Float)] = []
     @Published public private(set) var loop: LoopRegion?
     @Published public private(set) var loadedURL: URL?
+    @Published public private(set) var bookmarks: [TimeInterval] = []
     @Published public var speed: Float = 1.0 {
         didSet { engine.setSpeed(speed); persist() }
     }
     @Published public var pitch: Float = 0.0 {
         didSet { engine.setPitch(pitch); persist() }
+    }
+    @Published public var volume: Float = 1.0 {
+        didSet { engine.setVolume(volume); persist() }
     }
 
     // MARK: – Waveform zoom (managed here so the app-level scroll monitor can update it)
@@ -73,6 +77,7 @@ public final class PlayerViewModel: ObservableObject {
             scopedURL?.stopAccessingSecurityScopedResource()
             scopedURL = url
             loadedURL = url
+            RecentFilesStore.add(url)
             restoreState(for: url)
             Task { await reloadWaveform(url: url) }
         } catch {
@@ -81,7 +86,10 @@ public final class PlayerViewModel: ObservableObject {
     }
 
     private func restoreState(for url: URL) {
-        guard let state = FileStateStore.load(for: url) else { return }
+        guard let state = FileStateStore.load(for: url) else {
+            bookmarks = []
+            return
+        }
         // Suspend persistence while we hydrate published properties.
         isRestoring = true
         defer { isRestoring = false }
@@ -89,6 +97,8 @@ public final class PlayerViewModel: ObservableObject {
         waveformPanOffset = state.pan
         speed = state.speed
         pitch = state.pitch
+        volume = state.volume ?? 1.0
+        bookmarks = state.bookmarks ?? []
         if let region = state.loop {
             setLoop(region)
         }
@@ -107,7 +117,9 @@ public final class PlayerViewModel: ObservableObject {
             pan: waveformPanOffset,
             speed: speed,
             pitch: pitch,
-            lastTime: currentTime
+            lastTime: currentTime,
+            volume: volume,
+            bookmarks: bookmarks
         )
         FileStateStore.save(state, for: url)
     }
@@ -176,6 +188,42 @@ public final class PlayerViewModel: ObservableObject {
         let start = loop?.start ?? 0
         guard t - start >= 0.05 else { return }
         setLoop(LoopRegion(start: start, end: t))
+    }
+
+    public func nudgeLoopStart(by delta: TimeInterval) {
+        guard let loop else { return }
+        let newStart = max(0, min(loop.end - 0.05, loop.start + delta))
+        setLoop(LoopRegion(start: newStart, end: loop.end))
+    }
+
+    public func nudgeLoopEnd(by delta: TimeInterval) {
+        guard let loop else { return }
+        let newEnd = max(loop.start + 0.05, min(duration, loop.end + delta))
+        setLoop(LoopRegion(start: loop.start, end: newEnd))
+    }
+
+    // MARK: – Bookmarks
+
+    public func toggleBookmark(at time: TimeInterval) {
+        let t = max(0, min(time, duration))
+        // Remove if within 200ms of an existing bookmark.
+        if let idx = bookmarks.firstIndex(where: { abs($0 - t) < 0.2 }) {
+            bookmarks.remove(at: idx)
+        } else {
+            bookmarks.append(t)
+            bookmarks.sort()
+        }
+        persist()
+    }
+
+    public func jumpToBookmark(_ index: Int) {
+        guard index >= 0, index < bookmarks.count else { return }
+        seek(to: bookmarks[index])
+    }
+
+    public func clearBookmarks() {
+        bookmarks = []
+        persist()
     }
 
     // MARK: – Helpers

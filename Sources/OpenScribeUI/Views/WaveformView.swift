@@ -44,6 +44,7 @@ public struct WaveformView: View {
                 drawBackground(ctx: ctx, size: size)
                 drawWaveform(ctx: ctx, size: size)
                 drawLoop(ctx: ctx, size: size)
+                drawBookmarks(ctx: ctx, size: size)
                 drawPlayhead(ctx: ctx, size: size)
                 if zoomLevel > 1 { drawZoomLabel(ctx: ctx, size: size) }
             }
@@ -167,6 +168,34 @@ public struct WaveformView: View {
             border.move(to: CGPoint(x: x2, y: 0)); border.addLine(to: CGPoint(x: x2, y: size.height))
         }
         ctx.stroke(border, with: .color(Color.blue.opacity(0.7)), lineWidth: 1.5)
+    }
+
+    private func drawBookmarks(ctx: GraphicsContext, size: CGSize) {
+        guard vm.duration > 0 else { return }
+        let color = Color(red: 1.0, green: 0.85, blue: 0.30)
+        for (i, t) in vm.bookmarks.enumerated() {
+            let x = timeToX(t, width: size.width)
+            guard x >= 0 && x <= size.width else { continue }
+            // Vertical line
+            var line = Path()
+            line.move(to: CGPoint(x: x, y: 0))
+            line.addLine(to: CGPoint(x: x, y: size.height))
+            ctx.stroke(line, with: .color(color.opacity(0.55)), lineWidth: 1)
+            // Top flag
+            var flag = Path()
+            flag.move(to: CGPoint(x: x, y: 0))
+            flag.addLine(to: CGPoint(x: x + 12, y: 0))
+            flag.addLine(to: CGPoint(x: x + 12, y: 10))
+            flag.addLine(to: CGPoint(x: x + 6, y: 14))
+            flag.addLine(to: CGPoint(x: x, y: 10))
+            flag.closeSubpath()
+            ctx.fill(flag, with: .color(color))
+            ctx.draw(
+                Text("\(i + 1)").font(.system(size: 9, weight: .bold)).foregroundColor(.black),
+                at: CGPoint(x: x + 6, y: 7),
+                anchor: .center
+            )
+        }
     }
 
     private func drawPlayhead(ctx: GraphicsContext, size: CGSize) {

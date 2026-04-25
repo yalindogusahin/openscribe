@@ -8,6 +8,8 @@ struct FileState: Codable {
     var speed: Float
     var pitch: Float
     var lastTime: TimeInterval
+    var volume: Float?
+    var bookmarks: [TimeInterval]?
 }
 
 enum FileStateStore {

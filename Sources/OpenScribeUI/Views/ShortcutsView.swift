@@ -7,12 +7,15 @@ struct ShortcutsView: View {
         ("Return",       "Jump to loop start"),
         ("Esc",          "Clear loop"),
         ("[ / ]",        "Set loop start / end at playhead"),
+        ("⇧+[ / ⇧+]",    "Nudge loop edge by 50ms"),
+        ("B",            "Toggle bookmark at playhead"),
+        ("1...9",        "Jump to bookmark N"),
         ("⌘O",           "Open audio file"),
         ("Drag",         "Create loop on waveform"),
         ("⌥+drag",       "Pan zoomed waveform"),
         ("Scroll ↕",     "Zoom waveform at cursor"),
         ("Scroll ↔",     "Pan zoomed waveform"),
-        ("Double-click", "Reset Speed / Pitch label"),
+        ("Double-click", "Reset Speed / Pitch / Volume"),
     ]
 
     var body: some View {

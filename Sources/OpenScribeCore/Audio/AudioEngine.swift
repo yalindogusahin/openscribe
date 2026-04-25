@@ -151,6 +151,10 @@ public final class AudioEngine {
         applyTimePitch()
     }
 
+    public func setVolume(_ value: Float) {
+        engine.mainMixerNode.outputVolume = max(0, min(1, value))
+    }
+
     // MARK: – Private helpers
 
     private func applyTimePitch() {
