@@ -1,5 +1,6 @@
 import AVFoundation
 import Combine
+import CoreGraphics
 import Foundation
 
 public final class PlayerViewModel: ObservableObject {
@@ -16,6 +17,30 @@ public final class PlayerViewModel: ObservableObject {
     }
     @Published public var pitch: Float = 0.0 {
         didSet { engine.setPitch(pitch) }
+    }
+
+    // MARK: – Waveform zoom (managed here so the app-level scroll monitor can update it)
+
+    @Published public var waveformZoomLevel: Double = 1.0
+    @Published public var waveformPanOffset: Double = 0.0
+    /// Waveform frame in window coordinates — updated by WaveformView, read by scroll monitor
+    public var waveformWindowFrame: CGRect = .zero
+
+    public func handleWaveformScroll(dx: Double, dy: Double, mouseX: Double, viewWidth: Double) {
+        if dy.magnitude > dx.magnitude {
+            // Vertical → zoom centred on cursor
+            let cursorRatio = viewWidth > 0 ? mouseX / viewWidth : 0.5
+            let cursorNorm  = waveformPanOffset + cursorRatio / waveformZoomLevel
+            let newZoom     = max(1.0, min(64.0, waveformZoomLevel * exp(-dy * 0.04)))
+            let newPan      = max(0.0, min(1.0 - 1.0 / newZoom, cursorNorm - cursorRatio / newZoom))
+            waveformZoomLevel = newZoom
+            waveformPanOffset = newZoom == 1.0 ? 0.0 : newPan
+        } else {
+            // Horizontal → pan
+            guard waveformZoomLevel > 1 else { return }
+            let delta = dx * 0.003 / waveformZoomLevel
+            waveformPanOffset = max(0.0, min(1.0 - 1.0 / waveformZoomLevel, waveformPanOffset + delta))
+        }
     }
 
     // Pixel width for waveform rendering (set by the View)
@@ -52,8 +77,12 @@ public final class PlayerViewModel: ObservableObject {
 
     @MainActor
     private func reloadWaveform(url: URL, width: Int) async {
+        // Generate peaks at far higher resolution than the screen so zoom-in
+        // (up to 64x) still has dense data per pixel. The view buckets these
+        // down to the visible pixel range when drawing.
+        let resolution = max(width * 64, 8192)
         let peaks = try? await Task.detached(priority: .userInitiated) {
-            try WaveformAnalyzer.peaks(from: url, pixelCount: width)
+            try WaveformAnalyzer.peaks(from: url, pixelCount: resolution)
         }.value
         waveformPeaks = peaks ?? []
     }

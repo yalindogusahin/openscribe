@@ -7,50 +7,93 @@ import OpenScribeUI
 
 private class KeyboardShortcutService {
     weak var vm: PlayerViewModel?
-    private var monitor: Any?
+    private var keyMonitor: Any?
+    private var scrollMonitor: Any?
 
     init() {
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             self?.handle(event: event) ?? event
+        }
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            self?.handleScroll(event: event) ?? event
         }
     }
 
     deinit {
-        if let monitor { NSEvent.removeMonitor(monitor) }
+        if let keyMonitor    { NSEvent.removeMonitor(keyMonitor) }
+        if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
+    }
+
+    private func handleScroll(event: NSEvent) -> NSEvent? {
+        guard let vm else { return event }
+        let mouse = event.locationInWindow
+        guard vm.waveformWindowFrame.contains(mouse) else { return event }
+        let localX  = mouse.x - vm.waveformWindowFrame.minX
+        let viewW   = vm.waveformWindowFrame.width
+        DispatchQueue.main.async {
+            vm.handleWaveformScroll(
+                dx: Double(event.scrollingDeltaX),
+                dy: Double(event.scrollingDeltaY),
+                mouseX: Double(localX),
+                viewWidth: Double(viewW)
+            )
+        }
+        return nil  // consume so sliders don't also react
     }
 
     private func handle(event: NSEvent) -> NSEvent? {
-        guard let vm, vm.duration > 0 else { return event }
-        switch event.keyCode {
-        case 49: // Space — play / pause
-            DispatchQueue.main.async { vm.isPlaying ? vm.pause() : vm.play() }
-            return nil
-        case 123: // Left arrow — seek back
-            let step: TimeInterval = event.modifierFlags.contains(.shift) ? 1 : 5
-            DispatchQueue.main.async { vm.seek(to: max(0, vm.currentTime - step)) }
-            return nil
-        case 124: // Right arrow — seek forward
-            let step: TimeInterval = event.modifierFlags.contains(.shift) ? 1 : 5
-            DispatchQueue.main.async { vm.seek(to: min(vm.duration, vm.currentTime + step)) }
-            return nil
-        default:
+        // Cmd/Option combos must reach the menu / key-equivalent system.
+        if event.modifierFlags.contains(.command) || event.modifierFlags.contains(.option) {
             return event
         }
+        guard let vm else { return nil }
+        if vm.duration > 0 {
+            switch event.keyCode {
+            case 49: // Space — play / pause
+                DispatchQueue.main.async { vm.isPlaying ? vm.pause() : vm.play() }
+            case 123: // Left arrow — seek back
+                let step: TimeInterval = event.modifierFlags.contains(.shift) ? 1 : 5
+                DispatchQueue.main.async { vm.seek(to: max(0, vm.currentTime - step)) }
+            case 124: // Right arrow — seek forward
+                let step: TimeInterval = event.modifierFlags.contains(.shift) ? 1 : 5
+                DispatchQueue.main.async { vm.seek(to: min(vm.duration, vm.currentTime + step)) }
+            case 36: // Return — jump to loop start (or beginning if no loop)
+                DispatchQueue.main.async { vm.seek(to: vm.loop?.start ?? 0) }
+            case 53: // Escape — clear loop
+                DispatchQueue.main.async { vm.clearLoop() }
+            default:
+                break
+            }
+        }
+        // Always consume non-Cmd/Option keys so unhandled keys never trigger the system beep.
+        return nil
     }
 }
 
 // MARK: – App entry point
 
+// Global singleton — ensures exactly one set of NSEvent monitors for the app's lifetime.
+// A stored `let` on a SwiftUI App struct (value type) can be recreated on each body
+// evaluation, causing monitor churn that lets key events slip through and trigger the
+// macOS system beep even when shortcuts are otherwise functional.
+private let sharedKeyboard = KeyboardShortcutService()
+
 @main
 struct OpenScribeApp: App {
     @StateObject private var vm = PlayerViewModel()
-    // Retained for the app's lifetime
-    private let keyboard = KeyboardShortcutService()
+
+    init() {
+        // Suppress macOS system beep on unhandled key events (must run before any window is created).
+        _ = BeepSuppressor.install
+        // Eagerly initialize the keyboard service so the NSEvent monitor is installed
+        // before the first key event arrives.
+        _ = sharedKeyboard
+    }
 
     var body: some Scene {
         WindowGroup {
             ContentView(vm: vm)
-                .onAppear { keyboard.vm = vm }
+                .onAppear { sharedKeyboard.vm = vm }
         }
         .commands {
             CommandGroup(replacing: .newItem) {
@@ -60,8 +103,9 @@ struct OpenScribeApp: App {
                 .keyboardShortcut("o", modifiers: .command)
             }
             CommandMenu("Loop") {
+                // Escape is handled in KeyboardShortcutService to avoid the SwiftUI
+                // beep when the menu item is disabled (no loop active).
                 Button("Clear Loop") { vm.clearLoop() }
-                    .keyboardShortcut(.escape, modifiers: [])
                     .disabled(vm.loop == nil)
             }
         }
