@@ -20,6 +20,18 @@ public struct WaveformView: View {
             .gesture(dragGesture(width: geo.size.width))
             .onAppear { vm.waveformWidth = Int(geo.size.width) }
             .onChange(of: geo.size.width) { vm.waveformWidth = Int($0) }
+            .overlay {
+                if vm.waveformPeaks.isEmpty {
+                    Button {
+                        NotificationCenter.default.post(name: .openFileRequested, object: nil)
+                    } label: {
+                        Label("Open an audio file", systemImage: "music.note")
+                            .font(.system(size: 14))
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
         }
         .frame(minHeight: 120)
         .background(Color(red: 0.12, green: 0.12, blue: 0.12))
@@ -34,17 +46,7 @@ public struct WaveformView: View {
 
     private func drawWaveform(ctx: GraphicsContext, size: CGSize) {
         let peaks = vm.waveformPeaks
-        guard !peaks.isEmpty else {
-            let txtCtx = ctx
-            txtCtx.draw(
-                Text("Open an audio file  (⌘O)")
-                    .font(.system(size: 14))
-                    .foregroundColor(.secondary),
-                at: CGPoint(x: size.width / 2, y: size.height / 2),
-                anchor: .center
-            )
-            return
-        }
+        guard !peaks.isEmpty else { return }
 
         let mid = size.height / 2
         let scaleY = (size.height / 2) - 4
