@@ -26,13 +26,13 @@ let package = Package(
         .executableTarget(
             name: "OpenScribe",
             dependencies: ["OpenScribeCore", "OpenScribeUI"],
-            path: "Sources/TranscribeApp"
+            path: "Sources/OpenScribeApp"
         ),
         // Test target: pure Swift models only — AVFoundation is not loaded
         .testTarget(
-            name: "TranscribeAppTests",
+            name: "OpenScribeTests",
             dependencies: ["OpenScribeModels"],
-            path: "Tests/TranscribeAppTests"
+            path: "Tests/OpenScribeTests"
         ),
     ]
 )

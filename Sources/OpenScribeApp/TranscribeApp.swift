@@ -3,7 +3,7 @@ import OpenScribeCore
 import OpenScribeUI
 
 @main
-struct TranscribeApp: App {
+struct OpenScribeApp: App {
     @StateObject private var vm = PlayerViewModel()
 
     var body: some Scene {

@@ -28,5 +28,5 @@ jobs:
       - name: Run tests
         run: |
           BUNDLE=.build/arm64-apple-macosx/debug/OpenScribePackageTests.xctest
-          xcrun xctest -XCTest "TranscribeAppTests.LoopRegionTests" "$BUNDLE"
-          xcrun xctest -XCTest "TranscribeAppTests.PlayerViewModelTests" "$BUNDLE"
+          xcrun xctest -XCTest "OpenScribeTests.LoopRegionTests" "$BUNDLE"
+          xcrun xctest -XCTest "OpenScribeTests.PlayerViewModelTests" "$BUNDLE"

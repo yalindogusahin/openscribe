@@ -24,7 +24,7 @@ Check the [Issues](../../issues) tab for open bugs and feature requests. If you 
 ## Tests
 
 - Any new **business logic** (model, audio engine behaviour) should come with unit tests
-- Place tests in `Tests/TranscribeAppTests/`
+- Place tests in `Tests/OpenScribeTests/`
 - Run `swift test` before submitting your PR
 
 ## Reporting Bugs

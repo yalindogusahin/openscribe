@@ -29,7 +29,7 @@ Or build without running:
 
 ```bash
 swift build
-.build/debug/TranscribeApp
+.build/debug/OpenScribe
 ```
 
 ## Testing
