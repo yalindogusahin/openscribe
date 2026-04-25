@@ -1,3 +1,4 @@
+import AppKit
 import OpenScribeCore
 import SwiftUI
 
@@ -16,6 +17,9 @@ public struct WaveformView: View {
 
     // Hit radius for loop edge handles
     private let edgeHitRadius: CGFloat = 12
+
+    // Track active drag for cursor updates
+    @State private var isDragging = false
 
     public init(vm: PlayerViewModel) { self.vm = vm }
 
@@ -70,6 +74,14 @@ public struct WaveformView: View {
                 if zoomLevel > 1 { drawZoomLabel(ctx: ctx, size: size) }
             }
             .gesture(dragGesture(width: w))
+            .onContinuousHover { phase in
+                switch phase {
+                case .active(let location):
+                    cursorFor(location: location, width: w).set()
+                case .ended:
+                    NSCursor.arrow.set()
+                }
+            }
             .onAppear { vm.waveformWidth = Int(w) }
             .onChange(of: w) { vm.waveformWidth = Int($0) }
             // Scroll wheel zoom (overlay so DragGesture still works)
@@ -183,6 +195,7 @@ public struct WaveformView: View {
                 let x = value.location.x
 
                 if dragStart == nil {
+                    isDragging = true
                     dragMode = detectDragMode(startX: value.startLocation.x, width: width)
                     dragStart = Double(x / width)
                     if dragMode == .moveLoop, let loop = vm.loop {
@@ -226,7 +239,25 @@ public struct WaveformView: View {
                 dragStart  = nil
                 moveAnchor = nil
                 dragMode   = .newLoop
+                isDragging = false
             }
+    }
+
+    private func cursorFor(location: CGPoint, width: CGFloat) -> NSCursor {
+        if isDragging {
+            switch dragMode {
+            case .resizeStart, .resizeEnd: return .resizeLeftRight
+            case .moveLoop:               return .closedHand
+            case .newLoop:                return .crosshair
+            }
+        }
+        guard let loop = vm.loop, vm.duration > 0 else { return .crosshair }
+        let sx = timeToX(loop.start, width: width)
+        let ex = timeToX(loop.end,   width: width)
+        let x  = location.x
+        if abs(x - sx) <= edgeHitRadius || abs(x - ex) <= edgeHitRadius { return .resizeLeftRight }
+        if x > sx && x < ex { return .openHand }
+        return .crosshair
     }
 
     private func detectDragMode(startX: CGFloat, width: CGFloat) -> DragMode {

@@ -1,4 +1,3 @@
-import AppKit
 import OpenScribeCore
 import SwiftUI
 import UniformTypeIdentifiers
@@ -6,7 +5,6 @@ import UniformTypeIdentifiers
 public struct ContentView: View {
     @ObservedObject var vm: PlayerViewModel
     @State private var isFilePickerShown = false
-    @State private var keyEventMonitor: Any?
 
     public init(vm: PlayerViewModel) { self.vm = vm }
 
@@ -50,32 +48,6 @@ public struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .openFileRequested)) { _ in
             isFilePickerShown = true
-        }
-        .onAppear {
-            keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                switch event.keyCode {
-                case 49: // Space — play / pause
-                    guard vm.duration > 0 else { return event }
-                    vm.isPlaying ? vm.pause() : vm.play()
-                    return nil
-                case 123: // Left arrow — seek back
-                    let step: Double = event.modifierFlags.contains(.shift) ? 1 : 5
-                    vm.seek(to: max(0, vm.currentTime - step))
-                    return nil
-                case 124: // Right arrow — seek forward
-                    let step: Double = event.modifierFlags.contains(.shift) ? 1 : 5
-                    vm.seek(to: min(vm.duration, vm.currentTime + step))
-                    return nil
-                default:
-                    return event
-                }
-            }
-        }
-        .onDisappear {
-            if let monitor = keyEventMonitor {
-                NSEvent.removeMonitor(monitor)
-                keyEventMonitor = nil
-            }
         }
         .frame(minWidth: 700, minHeight: 220)
     }
