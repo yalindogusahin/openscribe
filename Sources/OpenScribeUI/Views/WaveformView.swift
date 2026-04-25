@@ -6,6 +6,11 @@ public struct WaveformView: View {
 
     // Internal drag state
     @State private var dragStart: Double? = nil
+    private enum DragMode { case newLoop, resizeStart, resizeEnd }
+    @State private var dragMode: DragMode = .newLoop
+
+    // Pixels within which a drag is treated as edge-resize
+    private let edgeHitRadius: CGFloat = 12
 
     public init(vm: PlayerViewModel) { self.vm = vm }
 
@@ -100,26 +105,57 @@ public struct WaveformView: View {
     private func dragGesture(width: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 4)
             .onChanged { value in
-                let ratio = min(1, max(0, Double(value.location.x / width)))
+                let x = value.location.x
+                let ratio = Double(min(width, max(0, x)) / width)
+
+                // Determine mode on first movement
                 if dragStart == nil {
-                    dragStart = min(1, max(0, Double(value.startLocation.x / width)))
+                    dragMode = detectDragMode(startX: value.startLocation.x, width: width)
+                    dragStart = ratio
                 }
-                guard let start = dragStart else { return }
-                let s = min(start, ratio) * vm.duration
-                let e = max(start, ratio) * vm.duration
-                if e > s {
-                    vm.setLoop(LoopRegion(start: s, end: e))
+
+                let time = ratio * vm.duration
+
+                switch dragMode {
+                case .resizeStart:
+                    guard let loop = vm.loop else { return }
+                    let newStart = min(time, loop.end - 0.1)
+                    vm.setLoop(LoopRegion(start: max(0, newStart), end: loop.end))
+
+                case .resizeEnd:
+                    guard let loop = vm.loop else { return }
+                    let newEnd = max(time, loop.start + 0.1)
+                    vm.setLoop(LoopRegion(start: loop.start, end: min(vm.duration, newEnd)))
+
+                case .newLoop:
+                    guard let startRatio = dragStart else { return }
+                    let s = min(startRatio, ratio) * vm.duration
+                    let e = max(startRatio, ratio) * vm.duration
+                    if e > s { vm.setLoop(LoopRegion(start: s, end: e)) }
                 }
             }
             .onEnded { value in
                 dragStart = nil
-                let ratio = min(1, max(0, Double(value.location.x / width)))
+                let ratio = Double(min(width, max(0, value.location.x)) / width)
                 let distance = abs(value.translation.width)
                 if distance < 4 {
-                    // Short tap → seek
-                    vm.clearLoop()
-                    vm.seek(to: ratio * vm.duration)
+                    // Short tap → seek (only when not resizing an edge)
+                    if dragMode == .newLoop {
+                        vm.clearLoop()
+                        vm.seek(to: ratio * vm.duration)
+                    }
                 }
+                dragMode = .newLoop
             }
+    }
+
+    /// Decide whether the drag starts on an edge handle or opens a new loop.
+    private func detectDragMode(startX: CGFloat, width: CGFloat) -> DragMode {
+        guard let loop = vm.loop, vm.duration > 0 else { return .newLoop }
+        let startPx = CGFloat(loop.start / vm.duration) * width
+        let endPx   = CGFloat(loop.end   / vm.duration) * width
+        if abs(startX - startPx) <= edgeHitRadius { return .resizeStart }
+        if abs(startX - endPx)   <= edgeHitRadius { return .resizeEnd }
+        return .newLoop
     }
 }
