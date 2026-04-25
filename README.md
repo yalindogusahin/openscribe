@@ -18,51 +18,37 @@ A free, open-source music transcription tool for macOS — built as an alternati
 ## Requirements
 
 - macOS 13 Ventura or later
-- Xcode 14 or later (for building from source)
+- Xcode Command Line Tools (clang, Metal toolchain)
 
 ## Download
 
-Grab the latest `.zip` from the [Releases](../../releases) page, unzip, and move `OpenScribe.app` to your Applications folder.
+Grab the latest `.zip` from the [Releases](../../releases) page, unzip, and move `OpenScribeNative.app` to your Applications folder.
 
 > **First launch:** right-click → Open to bypass the Gatekeeper warning (the app is not yet notarized).
 
 ## Build from Source
 
-**Prerequisites:** Xcode 14+ (for Swift toolchain)
+**Prerequisites:** Xcode Command Line Tools (`xcode-select --install`)
 
 ```bash
 git clone https://github.com/yalindogusahin/openscribe.git
 cd openscribe
-bash scripts/build-app.sh 1.0.0
-open OpenScribe.app
-```
-
-Or run directly without a bundle (requires Swift installed):
-
-```bash
-swift run OpenScribe
-```
-
-## Testing
-
-```bash
-swift test
+bash cpp/build.sh 1.0.0
+open cpp/OpenScribeNative.app
 ```
 
 ## Architecture
 
-OpenScribe follows **MVVM** with a dedicated audio layer:
+Native macOS app written in C++/Objective-C++ (Cocoa + AVFoundation + Metal).
 
 | Layer | Files | Responsibility |
 |---|---|---|
-| Model | `LoopRegion.swift` | Pure data, loop validation & clamping |
-| Audio | `AudioEngine.swift`, `WaveformAnalyzer.swift` | AVAudioEngine pipeline, waveform peaks |
-| ViewModel | `PlayerViewModel.swift` | UI state, coordinates audio ↔ views |
-| View | `WaveformView.swift`, `TransportView.swift`, `ContentView.swift` | SwiftUI rendering & gestures |
+| App | `main.mm`, `AppDelegate.mm` | Entry point, lifecycle |
+| Audio | `AudioEngine.mm` | AVFoundation pipeline, looping, time/pitch |
+| Views | `MainWindow.mm`, `WaveformView.mm`, `TimelineRulerView.mm` | Cocoa + Metal-rendered waveform |
+| Settings | `SettingsWindowController.mm` | Output device picker, prefs |
 
-The audio pipeline: `AVAudioPlayerNode → AVAudioUnitTimePitch → mainMixerNode → output`
-
-`AVAudioUnitTimePitch` handles both speed (`rate`) and pitch (`pitch` in cents) natively — no external libraries required.
+The audio pipeline uses `AVAudioPlayerNode → AVAudioUnitTimePitch → mainMixerNode → output`. `AVAudioUnitTimePitch` handles both speed (`rate`) and pitch (`pitch` in cents) natively. The waveform is rendered with a Metal shader (`WaveformShaders.metal`) for smooth zoom at any scale.
 
 ## Contributing
 

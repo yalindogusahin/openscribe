@@ -1,6 +1,6 @@
-# Swift Package Manager
-.build/
-.swiftpm/
+# C++ build artifacts
+cpp/build/
+cpp/OpenScribeNative.app
 
 # Xcode
 *.xcodeproj/
@@ -24,7 +24,6 @@ xcuserdata/
 # Binaries
 *.o
 *.d
-OpenScribe.app
 
 # Local-only scripts (personal helpers, not part of the project)
 scripts/local/
