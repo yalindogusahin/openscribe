@@ -23,5 +23,8 @@ class AudioEngine;
 @property (nonatomic, strong, readonly) NSButton* playPauseButton;
 @property (nonatomic, strong, readonly) NSButton* skipForwardButton;
 
+@property (nonatomic, strong, readonly) NSTextField* loopBadge;
+@property (nonatomic, strong, readonly) NSButton* helpButton;
+
 - (void)updatePlayPauseButton:(BOOL)playing;
 @end

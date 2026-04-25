@@ -18,6 +18,8 @@
 @property (nonatomic, strong, readwrite) NSButton* skipBackButton;
 @property (nonatomic, strong, readwrite) NSButton* playPauseButton;
 @property (nonatomic, strong, readwrite) NSButton* skipForwardButton;
+@property (nonatomic, strong, readwrite) NSTextField* loopBadge;
+@property (nonatomic, strong, readwrite) NSButton* helpButton;
 @end
 
 @implementation MainWindow
@@ -213,7 +215,7 @@ static NSButton* makeIconButton(NSRect frame, NSString* symbol, CGFloat pointSiz
     [self.contentView addSubview:self.skipForwardButton];
 
     // Big time label, right of transport.
-    CGFloat timeW = 200;
+    CGFloat timeW = 240;
     self.timeLabel = [[NSTextField alloc] initWithFrame:
         NSMakeRect(bounds.size.width - margin - timeW, transportY + (transportRowH - 26) / 2,
                    timeW, 26)];
@@ -224,9 +226,19 @@ static NSButton* makeIconButton(NSRect frame, NSString* symbol, CGFloat pointSiz
     self.timeLabel.font = [NSFont monospacedDigitSystemFontOfSize:18 weight:NSFontWeightLight];
     self.timeLabel.textColor = [NSColor colorWithWhite:0.95 alpha:1.0];
     self.timeLabel.alignment = NSTextAlignmentRight;
-    self.timeLabel.stringValue = @"00:00 / 00:00";
+    self.timeLabel.stringValue = @"00:00.00 / 00:00.00";
     self.timeLabel.autoresizingMask = NSViewMinXMargin | NSViewMaxYMargin;
     [self.contentView addSubview:self.timeLabel];
+
+    // Help (?) button at top-right of transport row.
+    CGFloat helpSize = 24;
+    self.helpButton = makeIconButton(
+        NSMakeRect(margin, transportY + (transportRowH - helpSize)/2,
+                   helpSize, helpSize), @"questionmark.circle", 16);
+    self.helpButton.contentTintColor = [NSColor colorWithWhite:0.65 alpha:1.0];
+    self.helpButton.toolTip = @"Keyboard shortcuts";
+    self.helpButton.autoresizingMask = NSViewMaxXMargin | NSViewMaxYMargin;
+    [self.contentView addSubview:self.helpButton];
 
     // Waveform fills everything above the transport row.
     CGFloat waveBottom = transportY + transportRowH + gap;
@@ -242,6 +254,29 @@ static NSButton* makeIconButton(NSRect frame, NSString* symbol, CGFloat pointSiz
     self.waveformView.layer.borderColor =
         [NSColor colorWithWhite:0.22 alpha:1.0].CGColor;
     [self.contentView addSubview:self.waveformView];
+
+    // Loop info badge — small pill anchored to bottom-left of waveform.
+    CGFloat badgeW = 240, badgeH = 22;
+    self.loopBadge = [[NSTextField alloc] initWithFrame:
+        NSMakeRect(waveFrame.origin.x + 10,
+                   waveFrame.origin.y + 10,
+                   badgeW, badgeH)];
+    self.loopBadge.bezeled = NO;
+    self.loopBadge.editable = NO;
+    self.loopBadge.selectable = NO;
+    self.loopBadge.drawsBackground = YES;
+    self.loopBadge.backgroundColor =
+        [NSColor colorWithRed:1.0 green:0.85 blue:0.20 alpha:0.18];
+    self.loopBadge.font = [NSFont monospacedDigitSystemFontOfSize:11
+                                                            weight:NSFontWeightMedium];
+    self.loopBadge.textColor = [NSColor colorWithRed:1.0 green:0.92 blue:0.50 alpha:1.0];
+    self.loopBadge.alignment = NSTextAlignmentCenter;
+    self.loopBadge.stringValue = @"";
+    self.loopBadge.hidden = YES;
+    self.loopBadge.wantsLayer = YES;
+    self.loopBadge.layer.cornerRadius = 4;
+    self.loopBadge.autoresizingMask = NSViewMaxXMargin | NSViewMaxYMargin;
+    [self.contentView addSubview:self.loopBadge];
 
     // Empty-state overlay: big icon + title + subtitle, centered on waveform.
     CGFloat hintW = 320;
@@ -282,6 +317,13 @@ static NSButton* makeIconButton(NSRect frame, NSString* symbol, CGFloat pointSiz
     [self.contentView addSubview:self.dropHintContainer];
 
     return self;
+}
+
+- (void)noResponderFor:(SEL)eventSelector {
+    // Swallow the system beep for unhandled key events. Our local key monitor
+    // already routes everything we care about — the rest should be silent.
+    if (eventSelector == @selector(keyDown:)) return;
+    [super noResponderFor:eventSelector];
 }
 
 - (void)updatePlayPauseButton:(BOOL)playing {
