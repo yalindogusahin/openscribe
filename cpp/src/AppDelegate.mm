@@ -13,17 +13,44 @@
 @interface OSFlippedView : NSView @end
 @implementation OSFlippedView - (BOOL)isFlipped { return YES; } @end
 
+namespace {
+struct SmartLoopState {
+    bool enabled = false;
+    double startSpeed = 0.5;
+    double endSpeed = 1.0;
+    double stepSize = 0.1;
+    int repeatsPerStep = 3;
+
+    int64_t lastSeenWrapCount = 0;
+    int currentStepIterations = 0;
+};
+}
+
 @interface AppDelegate () {
     std::unique_ptr<AudioEngine> _engine;
     id _keyMonitor;
     BOOL _torndown;
     std::vector<double> _bookmarks;
     NSTimeInterval _lastBookmarkToggleTime;
+    SmartLoopState _smartLoop;
 }
 @property (nonatomic, strong) MainWindow* mainWindow;
 @property (nonatomic, strong) NSTimer* timeTimer;
 @property (nonatomic, copy) NSString* currentFilePath;
 @property (nonatomic, strong) NSMenu* recentSubmenu;
+
+// Smart loop popover controls (kept around so we can refresh values).
+@property (nonatomic, strong) NSPopover* smartLoopPopover;
+@property (nonatomic, strong) NSButton* smartLoopToggle;
+@property (nonatomic, strong) NSSlider* smartLoopStartSlider;
+@property (nonatomic, strong) NSSlider* smartLoopEndSlider;
+@property (nonatomic, strong) NSSlider* smartLoopStepSlider;
+@property (nonatomic, strong) NSStepper* smartLoopRepeatsStepper;
+@property (nonatomic, strong) NSTextField* smartLoopStartLabel;
+@property (nonatomic, strong) NSTextField* smartLoopEndLabel;
+@property (nonatomic, strong) NSTextField* smartLoopStepLabel;
+@property (nonatomic, strong) NSTextField* smartLoopRepeatsLabel;
+@property (nonatomic, strong) NSTextField* smartLoopStatusLabel;
 @end
 
 @implementation AppDelegate
@@ -59,6 +86,9 @@
 
     self.mainWindow.helpButton.target = self;
     self.mainWindow.helpButton.action = @selector(showHelpPopover:);
+
+    self.mainWindow.smartLoopButton.target = self;
+    self.mainWindow.smartLoopButton.action = @selector(showSmartLoopPopover:);
 
     self.mainWindow.startButton.target = self;
     self.mainWindow.startButton.action = @selector(seekToStartClicked:);
@@ -102,17 +132,71 @@
         [NSString stringWithFormat:@"%@ / %@", now, dur];
     [self.mainWindow updatePlayPauseButton:_engine->isPlaying()];
 
+    [self pollSmartLoop];
+
     if (_engine->hasLoop()) {
         double sr = _engine->sampleRate();
         double ls = _engine->loopStartFrame() / sr;
         double le = _engine->loopEndFrame() / sr;
-        self.mainWindow.loopBadge.stringValue =
-            [NSString stringWithFormat:@"  Loop  %@ → %@  ",
-             [self formatSeconds:ls], [self formatSeconds:le]];
+        NSString* base = [NSString stringWithFormat:@"  Loop  %@ → %@",
+                          [self formatSeconds:ls], [self formatSeconds:le]];
+        if (_smartLoop.enabled) {
+            base = [base stringByAppendingFormat:@"   ·   %d/%d  @  %.2fx  ",
+                    std::min(_smartLoop.currentStepIterations, _smartLoop.repeatsPerStep),
+                    _smartLoop.repeatsPerStep,
+                    _engine->speed()];
+        } else {
+            base = [base stringByAppendingString:@"  "];
+        }
+        self.mainWindow.loopBadge.stringValue = base;
         self.mainWindow.loopBadge.hidden = NO;
     } else {
         self.mainWindow.loopBadge.hidden = YES;
     }
+}
+
+- (void)pollSmartLoop {
+    if (!_engine || !_smartLoop.enabled || !_engine->hasLoop()) {
+        // Keep lastSeenWrapCount in sync so toggling enabled later starts fresh.
+        if (_engine) _smartLoop.lastSeenWrapCount = _engine->loopWrapCount();
+        return;
+    }
+    int64_t wraps = _engine->loopWrapCount();
+    int64_t delta = wraps - _smartLoop.lastSeenWrapCount;
+    if (delta <= 0) return;
+    _smartLoop.lastSeenWrapCount = wraps;
+    _smartLoop.currentStepIterations += (int)delta;
+
+    while (_smartLoop.currentStepIterations >= _smartLoop.repeatsPerStep) {
+        double cur = _engine->speed();
+        // Round to 0.01 so 0.5 + 0.1 doesn't drift.
+        double snappedCur = std::round(cur * 100.0) / 100.0;
+        double snappedEnd = std::round(_smartLoop.endSpeed * 100.0) / 100.0;
+        if (snappedCur >= snappedEnd) {
+            // Reached top of the ramp — clamp the iteration counter so the UI
+            // shows "3/3" instead of climbing forever.
+            _smartLoop.currentStepIterations = _smartLoop.repeatsPerStep;
+            break;
+        }
+        double next = std::min(_smartLoop.endSpeed, snappedCur + _smartLoop.stepSize);
+        next = std::round(next * 100.0) / 100.0;
+        [self applySmartLoopSpeed:next];
+        _smartLoop.currentStepIterations -= _smartLoop.repeatsPerStep;
+    }
+
+    [self refreshSmartLoopStatusLabel];
+}
+
+- (void)applySmartLoopSpeed:(double)v {
+    NSSlider* s = self.mainWindow.speedSlider;
+    s.doubleValue = std::clamp(v, s.minValue, s.maxValue);
+    [self speedChanged:s];
+}
+
+- (void)resetSmartLoopBaseline {
+    if (_engine) _smartLoop.lastSeenWrapCount = _engine->loopWrapCount();
+    _smartLoop.currentStepIterations = 0;
+    [self refreshSmartLoopStatusLabel];
 }
 
 - (void)applicationWillTerminate:(NSNotification*)notification {
@@ -359,6 +443,266 @@
     [p showRelativeToRect:anchor.bounds ofView:anchor preferredEdge:NSMinYEdge];
 }
 
+// MARK: – Smart loop popover
+
+- (void)showSmartLoopPopover:(id)sender {
+    if (!self.smartLoopPopover) {
+        [self buildSmartLoopPopover];
+    }
+    [self syncSmartLoopControls];
+    NSView* anchor = (NSView*)sender;
+    [self.smartLoopPopover showRelativeToRect:anchor.bounds
+                                       ofView:anchor
+                                preferredEdge:NSMinYEdge];
+}
+
+- (void)buildSmartLoopPopover {
+    CGFloat w = 340;
+    CGFloat rowH = 24;
+    CGFloat margin = 16;
+    CGFloat labelW = 110;
+    CGFloat valueW = 56;
+    CGFloat sliderW = w - margin - labelW - 8 - valueW - margin;
+    __block CGFloat y = margin;
+
+    NSView* container = [[OSFlippedView alloc] initWithFrame:NSMakeRect(0, 0, w, 1)];
+    container.wantsLayer = YES;
+
+    NSTextField* title = [[NSTextField alloc]
+        initWithFrame:NSMakeRect(margin, y, w - 2 * margin - 60, 22)];
+    title.bezeled = NO; title.editable = NO; title.selectable = NO;
+    title.drawsBackground = NO;
+    title.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
+    title.textColor = [NSColor labelColor];
+    title.stringValue = @"Smart Loop";
+    [container addSubview:title];
+
+    self.smartLoopToggle = [[NSButton alloc] initWithFrame:
+        NSMakeRect(w - margin - 60, y, 60, 22)];
+    [self.smartLoopToggle setButtonType:NSButtonTypeSwitch];
+    self.smartLoopToggle.title = @"";
+    self.smartLoopToggle.target = self;
+    self.smartLoopToggle.action = @selector(smartLoopToggleChanged:);
+    [container addSubview:self.smartLoopToggle];
+
+    y += 30;
+
+    NSTextField* sub = [[NSTextField alloc]
+        initWithFrame:NSMakeRect(margin, y, w - 2 * margin, 16)];
+    sub.bezeled = NO; sub.editable = NO; sub.selectable = NO;
+    sub.drawsBackground = NO;
+    sub.font = [NSFont systemFontOfSize:11];
+    sub.textColor = [NSColor secondaryLabelColor];
+    sub.stringValue = @"Repeat the loop, gradually speeding up.";
+    [container addSubview:sub];
+
+    y += 24;
+
+    auto addRow = ^(NSString* labelText, NSSlider* slider, NSTextField* valueLabel) {
+        NSTextField* lbl = [[NSTextField alloc]
+            initWithFrame:NSMakeRect(margin, y, labelW, rowH)];
+        lbl.bezeled = NO; lbl.editable = NO; lbl.selectable = NO;
+        lbl.drawsBackground = NO;
+        lbl.font = [NSFont systemFontOfSize:11];
+        lbl.textColor = [NSColor labelColor];
+        lbl.stringValue = labelText;
+        [container addSubview:lbl];
+
+        slider.frame = NSMakeRect(margin + labelW, y + 1, sliderW, rowH - 2);
+        slider.continuous = YES;
+        [container addSubview:slider];
+
+        valueLabel.frame = NSMakeRect(margin + labelW + sliderW + 8, y, valueW, rowH);
+        valueLabel.bezeled = NO;
+        valueLabel.editable = NO;
+        valueLabel.selectable = NO;
+        valueLabel.drawsBackground = NO;
+        valueLabel.font = [NSFont monospacedDigitSystemFontOfSize:11
+                                                            weight:NSFontWeightMedium];
+        valueLabel.alignment = NSTextAlignmentRight;
+        valueLabel.textColor = [NSColor secondaryLabelColor];
+        [container addSubview:valueLabel];
+
+        y += rowH + 4;
+    };
+
+    self.smartLoopStartSlider = [[NSSlider alloc] init];
+    self.smartLoopStartSlider.minValue = 0.25;
+    self.smartLoopStartSlider.maxValue = 2.0;
+    self.smartLoopStartSlider.target = self;
+    self.smartLoopStartSlider.action = @selector(smartLoopStartChanged:);
+    self.smartLoopStartLabel = [[NSTextField alloc] init];
+    addRow(@"Start speed", self.smartLoopStartSlider, self.smartLoopStartLabel);
+
+    self.smartLoopEndSlider = [[NSSlider alloc] init];
+    self.smartLoopEndSlider.minValue = 0.25;
+    self.smartLoopEndSlider.maxValue = 2.0;
+    self.smartLoopEndSlider.target = self;
+    self.smartLoopEndSlider.action = @selector(smartLoopEndChanged:);
+    self.smartLoopEndLabel = [[NSTextField alloc] init];
+    addRow(@"End speed", self.smartLoopEndSlider, self.smartLoopEndLabel);
+
+    self.smartLoopStepSlider = [[NSSlider alloc] init];
+    self.smartLoopStepSlider.minValue = 0.05;
+    self.smartLoopStepSlider.maxValue = 0.5;
+    self.smartLoopStepSlider.target = self;
+    self.smartLoopStepSlider.action = @selector(smartLoopStepChanged:);
+    self.smartLoopStepLabel = [[NSTextField alloc] init];
+    addRow(@"Step size", self.smartLoopStepSlider, self.smartLoopStepLabel);
+
+    // Repeats per step (stepper instead of slider for integer values).
+    NSTextField* repLbl = [[NSTextField alloc]
+        initWithFrame:NSMakeRect(margin, y, labelW, rowH)];
+    repLbl.bezeled = NO; repLbl.editable = NO; repLbl.selectable = NO;
+    repLbl.drawsBackground = NO;
+    repLbl.font = [NSFont systemFontOfSize:11];
+    repLbl.textColor = [NSColor labelColor];
+    repLbl.stringValue = @"Repeats per step";
+    [container addSubview:repLbl];
+
+    self.smartLoopRepeatsStepper = [[NSStepper alloc] initWithFrame:
+        NSMakeRect(w - margin - 24, y, 24, rowH)];
+    self.smartLoopRepeatsStepper.minValue = 1;
+    self.smartLoopRepeatsStepper.maxValue = 10;
+    self.smartLoopRepeatsStepper.increment = 1;
+    self.smartLoopRepeatsStepper.target = self;
+    self.smartLoopRepeatsStepper.action = @selector(smartLoopRepeatsChanged:);
+    [container addSubview:self.smartLoopRepeatsStepper];
+
+    self.smartLoopRepeatsLabel = [[NSTextField alloc] initWithFrame:
+        NSMakeRect(w - margin - 24 - 32, y, 28, rowH)];
+    self.smartLoopRepeatsLabel.bezeled = NO;
+    self.smartLoopRepeatsLabel.editable = NO;
+    self.smartLoopRepeatsLabel.selectable = NO;
+    self.smartLoopRepeatsLabel.drawsBackground = NO;
+    self.smartLoopRepeatsLabel.font =
+        [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightMedium];
+    self.smartLoopRepeatsLabel.alignment = NSTextAlignmentRight;
+    self.smartLoopRepeatsLabel.textColor = [NSColor secondaryLabelColor];
+    [container addSubview:self.smartLoopRepeatsLabel];
+
+    y += rowH + 12;
+
+    NSView* sep = [[NSView alloc] initWithFrame:NSMakeRect(margin, y, w - 2 * margin, 1)];
+    sep.wantsLayer = YES;
+    sep.layer.backgroundColor = [NSColor colorWithWhite:0.0 alpha:0.12].CGColor;
+    [container addSubview:sep];
+    y += 9;
+
+    self.smartLoopStatusLabel = [[NSTextField alloc] initWithFrame:
+        NSMakeRect(margin, y, w - 2 * margin - 80, rowH)];
+    self.smartLoopStatusLabel.bezeled = NO;
+    self.smartLoopStatusLabel.editable = NO;
+    self.smartLoopStatusLabel.selectable = NO;
+    self.smartLoopStatusLabel.drawsBackground = NO;
+    self.smartLoopStatusLabel.font =
+        [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular];
+    self.smartLoopStatusLabel.textColor = [NSColor secondaryLabelColor];
+    self.smartLoopStatusLabel.stringValue = @"";
+    [container addSubview:self.smartLoopStatusLabel];
+
+    NSButton* resetBtn = [[NSButton alloc] initWithFrame:
+        NSMakeRect(w - margin - 64, y - 2, 64, rowH + 4)];
+    resetBtn.title = @"Reset";
+    resetBtn.bezelStyle = NSBezelStyleRounded;
+    resetBtn.target = self;
+    resetBtn.action = @selector(smartLoopResetClicked:);
+    [container addSubview:resetBtn];
+
+    y += rowH + margin;
+    container.frame = NSMakeRect(0, 0, w, y);
+
+    NSViewController* vc = [[NSViewController alloc] init];
+    vc.view = container;
+
+    self.smartLoopPopover = [[NSPopover alloc] init];
+    self.smartLoopPopover.contentViewController = vc;
+    self.smartLoopPopover.behavior = NSPopoverBehaviorTransient;
+    self.smartLoopPopover.contentSize = NSMakeSize(w, y);
+}
+
+- (void)syncSmartLoopControls {
+    self.smartLoopToggle.state = _smartLoop.enabled ? NSControlStateValueOn : NSControlStateValueOff;
+    self.smartLoopStartSlider.doubleValue = _smartLoop.startSpeed;
+    self.smartLoopEndSlider.doubleValue = _smartLoop.endSpeed;
+    self.smartLoopStepSlider.doubleValue = _smartLoop.stepSize;
+    self.smartLoopRepeatsStepper.integerValue = _smartLoop.repeatsPerStep;
+    self.smartLoopStartLabel.stringValue =
+        [NSString stringWithFormat:@"%.2fx", _smartLoop.startSpeed];
+    self.smartLoopEndLabel.stringValue =
+        [NSString stringWithFormat:@"%.2fx", _smartLoop.endSpeed];
+    self.smartLoopStepLabel.stringValue =
+        [NSString stringWithFormat:@"+%.2fx", _smartLoop.stepSize];
+    self.smartLoopRepeatsLabel.stringValue =
+        [NSString stringWithFormat:@"%d", _smartLoop.repeatsPerStep];
+    [self refreshSmartLoopStatusLabel];
+}
+
+- (void)refreshSmartLoopStatusLabel {
+    if (!self.smartLoopStatusLabel) return;
+    if (!_engine) {
+        self.smartLoopStatusLabel.stringValue = @"";
+        return;
+    }
+    int shown = std::min(_smartLoop.currentStepIterations, _smartLoop.repeatsPerStep);
+    self.smartLoopStatusLabel.stringValue =
+        [NSString stringWithFormat:@"%.2fx · rep %d/%d",
+         _engine->speed(), shown, _smartLoop.repeatsPerStep];
+}
+
+- (void)smartLoopToggleChanged:(NSButton*)sender {
+    bool wasEnabled = _smartLoop.enabled;
+    _smartLoop.enabled = sender.state == NSControlStateValueOn;
+    if (!wasEnabled && _smartLoop.enabled) {
+        // On enable: snap speed to startSpeed and reset iteration counter
+        // so practice begins from the slow end.
+        [self resetSmartLoopBaseline];
+        [self applySmartLoopSpeed:_smartLoop.startSpeed];
+    }
+    [self updateSmartLoopButtonTint];
+    [self refreshSmartLoopStatusLabel];
+}
+
+- (void)smartLoopStartChanged:(NSSlider*)sender {
+    double v = std::round(sender.doubleValue * 20.0) / 20.0;  // 0.05 step
+    _smartLoop.startSpeed = v;
+    if (_smartLoop.endSpeed < v) _smartLoop.endSpeed = v;
+    [self syncSmartLoopControls];
+}
+
+- (void)smartLoopEndChanged:(NSSlider*)sender {
+    double v = std::round(sender.doubleValue * 20.0) / 20.0;
+    _smartLoop.endSpeed = v;
+    if (_smartLoop.startSpeed > v) _smartLoop.startSpeed = v;
+    [self syncSmartLoopControls];
+}
+
+- (void)smartLoopStepChanged:(NSSlider*)sender {
+    double v = std::round(sender.doubleValue * 20.0) / 20.0;
+    if (v < 0.05) v = 0.05;
+    _smartLoop.stepSize = v;
+    [self syncSmartLoopControls];
+}
+
+- (void)smartLoopRepeatsChanged:(NSStepper*)sender {
+    _smartLoop.repeatsPerStep = (int)sender.integerValue;
+    [self syncSmartLoopControls];
+}
+
+- (void)smartLoopResetClicked:(id)sender {
+    if (_smartLoop.enabled) {
+        [self applySmartLoopSpeed:_smartLoop.startSpeed];
+    }
+    [self resetSmartLoopBaseline];
+}
+
+- (void)updateSmartLoopButtonTint {
+    NSColor* color = _smartLoop.enabled
+        ? [NSColor colorWithRed:0.40 green:0.78 blue:1.0 alpha:1.0]
+        : [NSColor colorWithWhite:0.65 alpha:1.0];
+    self.mainWindow.smartLoopButton.contentTintColor = color;
+}
+
 - (void)installKeyMonitor {
     __weak AppDelegate* weakSelf = self;
     _keyMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
@@ -593,6 +937,11 @@
         d[@"loopStart"] = @(_engine->loopStartFrame() / sr);
         d[@"loopEnd"]   = @(_engine->loopEndFrame() / sr);
     }
+    d[@"smartLoopEnabled"]    = @(_smartLoop.enabled);
+    d[@"smartLoopStartSpeed"] = @(_smartLoop.startSpeed);
+    d[@"smartLoopEndSpeed"]   = @(_smartLoop.endSpeed);
+    d[@"smartLoopStepSize"]   = @(_smartLoop.stepSize);
+    d[@"smartLoopRepeats"]    = @(_smartLoop.repeatsPerStep);
     [[NSUserDefaults standardUserDefaults] setObject:d
                                               forKey:[self stateKeyForPath:path]];
 }
@@ -649,6 +998,20 @@
         double t = nLast.doubleValue;
         if (t > 0.0 && t < _engine->duration()) _engine->seek(t);
     }
+
+    NSNumber* slEnabled = d[@"smartLoopEnabled"];
+    NSNumber* slStart   = d[@"smartLoopStartSpeed"];
+    NSNumber* slEnd     = d[@"smartLoopEndSpeed"];
+    NSNumber* slStep    = d[@"smartLoopStepSize"];
+    NSNumber* slReps    = d[@"smartLoopRepeats"];
+    if (slStart) _smartLoop.startSpeed = std::clamp(slStart.doubleValue, 0.25, 2.0);
+    if (slEnd)   _smartLoop.endSpeed   = std::clamp(slEnd.doubleValue,   0.25, 2.0);
+    if (slStep)  _smartLoop.stepSize   = std::clamp(slStep.doubleValue,  0.05, 0.5);
+    if (slReps)  _smartLoop.repeatsPerStep = std::clamp((int)slReps.integerValue, 1, 10);
+    _smartLoop.enabled = slEnabled.boolValue;
+    [self resetSmartLoopBaseline];
+    [self updateSmartLoopButtonTint];
+    if (self.smartLoopPopover) [self syncSmartLoopControls];
 }
 
 - (void)speedChanged:(NSSlider*)sender {
@@ -698,6 +1061,8 @@
         _bookmarks.clear();
         [self pushBookmarksToView];
         _engine->clearLoop();
+        _smartLoop = SmartLoopState{};
+        [self updateSmartLoopButtonTint];
         [self.mainWindow setTitle:
             [NSString stringWithFormat:@"OpenScribe Native — %@", path.lastPathComponent]];
         [self.mainWindow.waveformView reloadFromEngine];

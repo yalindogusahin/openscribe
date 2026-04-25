@@ -20,6 +20,7 @@
 @property (nonatomic, strong, readwrite) NSButton* skipForwardButton;
 @property (nonatomic, strong, readwrite) NSTextField* loopBadge;
 @property (nonatomic, strong, readwrite) NSButton* helpButton;
+@property (nonatomic, strong, readwrite) NSButton* smartLoopButton;
 @end
 
 @implementation MainWindow
@@ -230,15 +231,26 @@ static NSButton* makeIconButton(NSRect frame, NSString* symbol, CGFloat pointSiz
     self.timeLabel.autoresizingMask = NSViewMinXMargin | NSViewMaxYMargin;
     [self.contentView addSubview:self.timeLabel];
 
-    // Help (?) button at top-right of transport row.
-    CGFloat helpSize = 24;
+    // Help (?) button at top-left of transport row.
+    CGFloat iconSize = 24;
     self.helpButton = makeIconButton(
-        NSMakeRect(margin, transportY + (transportRowH - helpSize)/2,
-                   helpSize, helpSize), @"questionmark.circle", 16);
+        NSMakeRect(margin, transportY + (transportRowH - iconSize)/2,
+                   iconSize, iconSize), @"questionmark.circle", 16);
     self.helpButton.contentTintColor = [NSColor colorWithWhite:0.65 alpha:1.0];
     self.helpButton.toolTip = @"Keyboard shortcuts";
     self.helpButton.autoresizingMask = NSViewMaxXMargin | NSViewMaxYMargin;
     [self.contentView addSubview:self.helpButton];
+
+    // Smart loop (wand) button — to the right of help.
+    self.smartLoopButton = makeIconButton(
+        NSMakeRect(margin + iconSize + 8,
+                   transportY + (transportRowH - iconSize)/2,
+                   iconSize, iconSize),
+        @"wand.and.stars", 15);
+    self.smartLoopButton.contentTintColor = [NSColor colorWithWhite:0.65 alpha:1.0];
+    self.smartLoopButton.toolTip = @"Smart loop — gradually increase speed across reps";
+    self.smartLoopButton.autoresizingMask = NSViewMaxXMargin | NSViewMaxYMargin;
+    [self.contentView addSubview:self.smartLoopButton];
 
     // Waveform fills everything above the transport row.
     CGFloat waveBottom = transportY + transportRowH + gap;

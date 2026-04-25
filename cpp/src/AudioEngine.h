@@ -23,6 +23,11 @@ public:
     int64_t loopStartFrame() const { return loopStart_.load(); }
     int64_t loopEndFrame() const { return loopEnd_.load(); }
 
+    // Monotonic counter incremented every time the playhead wraps from
+    // loopEnd back to loopStart. Read by the UI thread to detect completed
+    // loop iterations (smart loop, iteration display).
+    int64_t loopWrapCount() const { return loopWrapCount_.load(); }
+
     void setSpeed(double rate);   // 1.0 = normal; 0.25..4.0 valid
     double speed() const { return speed_; }
 
@@ -86,6 +91,7 @@ private:
     std::atomic<int64_t> readFrame_{0};
     std::atomic<int64_t> loopStart_{-1};
     std::atomic<int64_t> loopEnd_{-1};
+    std::atomic<int64_t> loopWrapCount_{0};
     std::atomic<bool> playing_{false};
     std::atomic<float> volume_{1.0f};
 };

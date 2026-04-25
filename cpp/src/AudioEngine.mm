@@ -414,8 +414,12 @@ void AudioEngine::render(uint32_t numFrames, AudioBufferList* ioData) {
     int64_t pos = readFrame_.load();
     const float vol = volume_.load();
 
+    int64_t wraps = 0;
     for (uint32_t i = 0; i < numFrames; ++i) {
-        if (looping && pos >= lEnd) pos = lStart;
+        if (looping && pos >= lEnd) {
+            pos = lStart;
+            ++wraps;
+        }
         if (!looping && pos >= total) {
             L[i] = 0.0f;
             R[i] = 0.0f;
@@ -427,4 +431,7 @@ void AudioEngine::render(uint32_t numFrames, AudioBufferList* ioData) {
     }
 
     readFrame_.store(pos);
+    if (wraps > 0) {
+        loopWrapCount_.fetch_add(wraps);
+    }
 }
