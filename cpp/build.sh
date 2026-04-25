@@ -42,6 +42,9 @@ mkdir -p "$BUNDLE/Contents/MacOS"
 mkdir -p "$BUNDLE/Contents/Resources"
 cp "build/$EXE_NAME" "$BUNDLE/Contents/MacOS/$EXE_NAME"
 cp build/default.metallib "$BUNDLE/Contents/Resources/default.metallib"
+if [ -f AppIcon.icns ]; then
+    cp AppIcon.icns "$BUNDLE/Contents/Resources/AppIcon.icns"
+fi
 
 cat > "$BUNDLE/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -62,6 +65,8 @@ cat > "$BUNDLE/Contents/Info.plist" <<EOF
     <string>$VERSION</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>NSHighResolutionCapable</key>
