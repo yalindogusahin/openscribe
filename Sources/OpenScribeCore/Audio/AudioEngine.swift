@@ -164,6 +164,7 @@ public final class AudioEngine {
                     if self.loop != nil {
                         // Loop: başa dön
                         let loopStart = AVAudioFramePosition((self.loop?.start ?? 0) * self.sampleRate)
+                        self.currentFrame = loopStart  // playhead'i sıfırla
                         self.scheduleSegment(from: loopStart, file: file)
                     } else {
                         self.isPlaying = false
