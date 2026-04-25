@@ -5,7 +5,7 @@ A free, open-source music transcription tool for macOS — built as an alternati
 > *"If I stop practice for one day, I notice it; two days, my friends notice it; three days, the public notices it."*
 > — Hans von Bülow (1877)
 
-<!-- screenshot -->
+![OpenScribe screenshot](docs/screenshot.png)
 
 ## Features
 
