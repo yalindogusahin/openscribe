@@ -1,9 +1,12 @@
+import OpenScribeCore
 import SwiftUI
 
-struct TransportView: View {
+public struct TransportView: View {
     @ObservedObject var vm: PlayerViewModel
 
-    var body: some View {
+    public init(vm: PlayerViewModel) { self.vm = vm }
+
+    public var body: some View {
         HStack(spacing: 20) {
             // ---- Play / Pause ----
             Button(action: togglePlay) {

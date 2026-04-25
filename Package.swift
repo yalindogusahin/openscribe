@@ -2,22 +2,36 @@
 import PackageDescription
 
 let package = Package(
-    name: "TranscribeApp",
+    name: "OpenScribe",
     platforms: [.macOS(.v13)],
     targets: [
+        // Saf Swift modeller — bağımlılık yok, test edilebilir
+        .target(
+            name: "OpenScribeModels",
+            path: "Sources/OpenScribeModels"
+        ),
+        // Audio + ViewModel — AVFoundation + Combine
+        .target(
+            name: "OpenScribeCore",
+            dependencies: ["OpenScribeModels"],
+            path: "Sources/OpenScribeCore"
+        ),
+        // SwiftUI views
+        .target(
+            name: "OpenScribeUI",
+            dependencies: ["OpenScribeCore"],
+            path: "Sources/OpenScribeUI"
+        ),
+        // Sadece giriş noktası
         .executableTarget(
             name: "TranscribeApp",
-            path: "Sources/TranscribeApp",
-            linkerSettings: [
-                .linkedFramework("AVFoundation"),
-                .linkedFramework("CoreAudio"),
-                .linkedFramework("SwiftUI"),
-                .linkedFramework("AppKit"),
-            ]
+            dependencies: ["OpenScribeCore", "OpenScribeUI"],
+            path: "Sources/TranscribeApp"
         ),
+        // Test target: sadece saf Swift modeller — AVFoundation yüklenmez
         .testTarget(
             name: "TranscribeAppTests",
-            dependencies: ["TranscribeApp"],
+            dependencies: ["OpenScribeModels"],
             path: "Tests/TranscribeAppTests"
         ),
     ]

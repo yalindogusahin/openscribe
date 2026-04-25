@@ -1,11 +1,14 @@
+import OpenScribeCore
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct ContentView: View {
+public struct ContentView: View {
     @ObservedObject var vm: PlayerViewModel
     @State private var isFilePickerShown = false
 
-    var body: some View {
+    public init(vm: PlayerViewModel) { self.vm = vm }
+
+    public var body: some View {
         VStack(spacing: 0) {
             WaveformView(vm: vm)
                 .frame(maxWidth: .infinity)
@@ -33,10 +36,14 @@ struct ContentView: View {
     }
 
     private var supportedTypes: [UTType] {
-        [.mp3, .wav, .aiff, .flac, .m4a, UTType("public.aac-audio")].compactMap { $0 }
+        var types: [UTType] = [.mp3, .wav, .aiff]
+        if let flac = UTType(filenameExtension: "flac") { types.append(flac) }
+        if let m4a  = UTType(filenameExtension: "m4a")  { types.append(m4a) }
+        if let aac  = UTType("public.aac-audio")         { types.append(aac) }
+        return types
     }
 }
 
 extension Notification.Name {
-    static let openFileRequested = Notification.Name("openFileRequested")
+    public static let openFileRequested = Notification.Name("openFileRequested")
 }

@@ -1,12 +1,15 @@
+import OpenScribeCore
 import SwiftUI
 
-struct WaveformView: View {
+public struct WaveformView: View {
     @ObservedObject var vm: PlayerViewModel
 
     // Gesture için iç durum
-    @State private var dragStart: Double? = nil    // 0…1 aralığında ratio
+    @State private var dragStart: Double? = nil
 
-    var body: some View {
+    public init(vm: PlayerViewModel) { self.vm = vm }
+
+    public var body: some View {
         GeometryReader { geo in
             Canvas { ctx, size in
                 drawBackground(ctx: ctx, size: size)
@@ -32,7 +35,7 @@ struct WaveformView: View {
     private func drawWaveform(ctx: GraphicsContext, size: CGSize) {
         let peaks = vm.waveformPeaks
         guard !peaks.isEmpty else {
-            var txtCtx = ctx
+            let txtCtx = ctx
             txtCtx.draw(
                 Text("Ses dosyası açın  (⌘O)")
                     .font(.system(size: 14))

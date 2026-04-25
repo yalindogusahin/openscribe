@@ -1,11 +1,10 @@
 import AVFoundation
 import Foundation
 
-struct WaveformAnalyzer {
+public struct WaveformAnalyzer {
     /// Ses dosyasından `pixelCount` adet (min, max) peak çifti üretir.
-    static func peaks(from url: URL, pixelCount: Int) throws -> [(min: Float, max: Float)] {
+    public static func peaks(from url: URL, pixelCount: Int) throws -> [(min: Float, max: Float)] {
         let file = try AVAudioFile(forReading: url)
-        let format = AVAudioPCMStreamFormat(file.fileFormat)
         let frameCount = AVAudioFrameCount(file.length)
         guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frameCount) else {
             throw WaveformError.bufferAllocation
@@ -34,11 +33,9 @@ struct WaveformAnalyzer {
         return peaks
     }
 
-    enum WaveformError: Error {
+    public enum WaveformError: Error {
         case bufferAllocation
         case noChannelData
     }
 }
 
-// AVAudioPCMStreamFormat satırını derleyici kaldırabilir; basit alias:
-private typealias AVAudioPCMStreamFormat = AVAudioFormat

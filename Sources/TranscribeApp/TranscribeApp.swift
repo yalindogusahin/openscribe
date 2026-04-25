@@ -1,4 +1,6 @@
 import SwiftUI
+import OpenScribeCore
+import OpenScribeUI
 
 @main
 struct TranscribeApp: App {

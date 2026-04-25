@@ -1,5 +1,5 @@
 import XCTest
-@testable import TranscribeApp
+@testable import OpenScribeModels
 
 final class LoopRegionTests: XCTestCase {
 

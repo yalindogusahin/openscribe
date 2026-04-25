@@ -3,15 +3,15 @@ import Foundation
 
 // MARK: - Delegate
 
-protocol AudioEngineDelegate: AnyObject {
+public protocol AudioEngineDelegate: AnyObject {
     func audioEngineDidUpdatePosition(_ time: TimeInterval)
     func audioEngineDidFinish()
 }
 
 // MARK: - AudioEngine
 
-final class AudioEngine {
-    weak var delegate: AudioEngineDelegate?
+public final class AudioEngine {
+    public weak var delegate: AudioEngineDelegate?
 
     // AVAudioEngine pipeline:
     //   playerNode → timePitchNode → engine.mainMixerNode → output
@@ -24,22 +24,22 @@ final class AudioEngine {
     private var sampleRate: Double = 44100
 
     // Oynatma durumu
-    private(set) var isPlaying = false
+    public private(set) var isPlaying = false
     private var currentFrame: AVAudioFramePosition = 0  // son seek pozisyonu
 
     // Loop
-    private(set) var loop: LoopRegion?
+    public private(set) var loop: LoopRegion?
 
     // Hız & Pitch
-    private(set) var speed: Float = 1.0   // 0.25 – 4.0
-    private(set) var pitch: Float = 0.0   // semitone, –12 / +12
+    public private(set) var speed: Float = 1.0
+    public private(set) var pitch: Float = 0.0
 
     // Timer → delegate çağrısı
     private var positionTimer: Timer?
 
     // MARK: Init
 
-    init() {
+    public init() {
         engine.attach(playerNode)
         engine.attach(timePitchNode)
         engine.connect(playerNode, to: timePitchNode, format: nil)
@@ -48,7 +48,7 @@ final class AudioEngine {
 
     // MARK: – Dosya yükleme
 
-    func load(url: URL) throws {
+    public func load(url: URL) throws {
         stop()
         let file = try AVAudioFile(forReading: url)
         audioFile = file
@@ -65,17 +65,17 @@ final class AudioEngine {
         applyTimePitch()
     }
 
-    var duration: TimeInterval {
+    public var duration: TimeInterval {
         sampleRate > 0 ? Double(totalFrames) / sampleRate : 0
     }
 
-    var currentTime: TimeInterval {
+    public var currentTime: TimeInterval {
         currentTimeFromNode() ?? (Double(currentFrame) / sampleRate)
     }
 
     // MARK: – Transport
 
-    func play() {
+    public func play() {
         guard let file = audioFile else { return }
         if !engine.isRunning { try? engine.start() }
         scheduleSegment(from: currentFrame, file: file)
@@ -84,21 +84,21 @@ final class AudioEngine {
         startPositionTimer()
     }
 
-    func pause() {
+    public func pause() {
         playerNode.pause()
         currentFrame = currentFrameFromNode()
         isPlaying = false
         stopPositionTimer()
     }
 
-    func stop() {
+    public func stop() {
         playerNode.stop()
         currentFrame = 0
         isPlaying = false
         stopPositionTimer()
     }
 
-    func seek(to time: TimeInterval) {
+    public func seek(to time: TimeInterval) {
         let wasPlaying = isPlaying
         playerNode.stop()
         currentFrame = AVAudioFramePosition(time * sampleRate)
@@ -111,25 +111,25 @@ final class AudioEngine {
 
     // MARK: – Loop
 
-    func setLoop(_ region: LoopRegion) {
+    public func setLoop(_ region: LoopRegion) {
         loop = region.clamped(to: duration)
         if isPlaying {
             seek(to: max(region.start, currentTime))
         }
     }
 
-    func clearLoop() {
+    public func clearLoop() {
         loop = nil
     }
 
     // MARK: – Hız & Pitch
 
-    func setSpeed(_ value: Float) {
+    public func setSpeed(_ value: Float) {
         speed = max(0.25, min(4.0, value))
         applyTimePitch()
     }
 
-    func setPitch(_ semitones: Float) {
+    public func setPitch(_ semitones: Float) {
         pitch = max(-12, min(12, semitones))
         applyTimePitch()
     }
