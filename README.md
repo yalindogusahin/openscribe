@@ -17,19 +17,27 @@ A free, open-source music transcription tool for macOS — built as an alternati
 - macOS 13 Ventura or later
 - Xcode 14 or later (for building from source)
 
-## Build & Run
+## Download
+
+Grab the latest `.zip` from the [Releases](../../releases) page, unzip, and move `OpenScribe.app` to your Applications folder.
+
+> **First launch:** right-click → Open to bypass the Gatekeeper warning (the app is not yet notarized).
+
+## Build from Source
+
+**Prerequisites:** Xcode 14+ (for Swift toolchain)
 
 ```bash
-git clone https://github.com/yourusername/openscribe.git
+git clone https://github.com/yalindogusahin/openscribe.git
 cd openscribe
-swift run
+bash scripts/build-app.sh 1.0.0
+open OpenScribe.app
 ```
 
-Or build without running:
+Or run directly without a bundle (requires Swift installed):
 
 ```bash
-swift build
-.build/debug/OpenScribe
+swift run OpenScribe
 ```
 
 ## Testing
