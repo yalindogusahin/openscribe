@@ -2,8 +2,8 @@
 
 A free, open-source music transcription tool for macOS — built as an alternative to [Transcribe!](https://www.seventhstring.com/xscribe/overview.html).
 
-> *"If I go without practicing piano, after one day I can hear it; after two days my wife can hear it; and after three days my friends can hear it."*
-> — Ignacy Jan Paderewski
+> *"If I stop practice for one day, I notice it; two days, my friends notice it; three days, the public notices it."*
+> — Hans von Bülow (1877)
 
 <!-- screenshot -->
 
