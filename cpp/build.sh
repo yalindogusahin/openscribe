@@ -7,7 +7,7 @@ cd "$(dirname "$0")"
 BUNDLE="OpenScribeNative.app"
 EXE_NAME="OpenScribeNative"
 BUNDLE_ID="com.yalindogusahin.openscribe.native"
-VERSION="0.1.0"
+VERSION="${1:-0.1.0}"
 
 mkdir -p build
 

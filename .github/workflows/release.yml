@@ -26,22 +26,22 @@ jobs:
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
 
       - name: Build app bundle
-        run: bash scripts/build-app.sh ${{ steps.version.outputs.VERSION }}
+        run: bash cpp/build.sh ${{ steps.version.outputs.VERSION }}
 
       - name: Zip app bundle
-        run: ditto -c -k --keepParent OpenScribe.app OpenScribe-${{ steps.version.outputs.VERSION }}.zip
+        run: ditto -c -k --keepParent cpp/OpenScribeNative.app OpenScribeNative-${{ steps.version.outputs.VERSION }}.zip
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: OpenScribe ${{ steps.version.outputs.VERSION }}
-          files: OpenScribe-${{ steps.version.outputs.VERSION }}.zip
+          files: OpenScribeNative-${{ steps.version.outputs.VERSION }}.zip
           generate_release_notes: true
           body: |
             ## Installation
 
-            1. Download `OpenScribe-${{ steps.version.outputs.VERSION }}.zip`
-            2. Unzip and move `OpenScribe.app` to your Applications folder
+            1. Download `OpenScribeNative-${{ steps.version.outputs.VERSION }}.zip`
+            2. Unzip and move `OpenScribeNative.app` to your Applications folder
             3. First launch: right-click → Open (macOS Gatekeeper — app is not notarized)
 
             **Requires macOS 13 Ventura or later.**
