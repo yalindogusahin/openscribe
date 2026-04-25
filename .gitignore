@@ -25,3 +25,6 @@ xcuserdata/
 *.o
 *.d
 OpenScribe.app
+
+# Local-only scripts (personal helpers, not part of the project)
+scripts/local/

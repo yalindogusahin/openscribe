@@ -43,21 +43,22 @@ public final class PlayerViewModel: ObservableObject {
         }
     }
 
-    // Pixel width for waveform rendering (set by the View)
-    public var waveformWidth: Int = 800 {
-        didSet {
-            if oldValue != waveformWidth, let url = loadedURL {
-                Task { await reloadWaveform(url: url, width: waveformWidth) }
-            }
-        }
-    }
+    // Pixel width for waveform rendering (set by the View). Informational only —
+    // peaks are sampled at a fixed high resolution so resizing the window does
+    // NOT trigger a re-analysis. The view buckets peaks down to actual pixels.
+    public var waveformWidth: Int = 800
 
     // MARK: – Private
 
     private let engine = AudioEngine()
+    private var scopedURL: URL?
 
     public init() {
         engine.delegate = self
+    }
+
+    deinit {
+        scopedURL?.stopAccessingSecurityScopedResource()
     }
 
     // MARK: – File loading
@@ -68,21 +69,24 @@ public final class PlayerViewModel: ObservableObject {
             duration = engine.duration
             currentTime = 0
             loop = nil
+            // Release any previous sandbox scope before adopting the new one.
+            scopedURL?.stopAccessingSecurityScopedResource()
+            scopedURL = url
             loadedURL = url
-            Task { await reloadWaveform(url: url, width: waveformWidth) }
+            Task { await reloadWaveform(url: url) }
         } catch {
             print("AudioEngine load error: \(error)")
         }
     }
 
     @MainActor
-    private func reloadWaveform(url: URL, width: Int) async {
-        // Generate peaks at far higher resolution than the screen so zoom-in
-        // (up to 64x) still has dense data per pixel. The view buckets these
-        // down to the visible pixel range when drawing.
-        let resolution = max(width * 64, 8192)
+    private func reloadWaveform(url: URL) async {
+        // Fixed resolution: high enough that even at 64× zoom there are several
+        // peaks per screen pixel on a wide display. The view buckets down to
+        // the visible pixel range when drawing, so window resizes never trigger
+        // a re-analysis.
         let peaks = try? await Task.detached(priority: .userInitiated) {
-            try WaveformAnalyzer.peaks(from: url, pixelCount: resolution)
+            try WaveformAnalyzer.peaks(from: url, pixelCount: 131_072)
         }.value
         waveformPeaks = peaks ?? []
     }

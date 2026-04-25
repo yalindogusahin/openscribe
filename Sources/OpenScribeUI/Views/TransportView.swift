@@ -69,7 +69,6 @@ public struct TransportView: View {
             // ---- Clear Loop ----
             Button("Clear Loop") { vm.clearLoop() }
                 .disabled(vm.loop == nil)
-                .keyboardShortcut(.escape, modifiers: [])
 
             Spacer()
         }

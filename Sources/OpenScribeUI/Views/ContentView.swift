@@ -28,8 +28,7 @@ public struct ContentView: View {
                 }
                 guard let url else { return }
                 DispatchQueue.main.async {
-                    _ = url.startAccessingSecurityScopedResource()
-                    vm.load(url: url)
+                    loadWithScope(url)
                 }
             }
             return true
@@ -40,16 +39,20 @@ public struct ContentView: View {
             allowsMultipleSelection: false
         ) { result in
             if case .success(let urls) = result, let url = urls.first {
-                // Security-scoped resource access for sandbox
-                if url.startAccessingSecurityScopedResource() {
-                    vm.load(url: url)
-                }
+                loadWithScope(url)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .openFileRequested)) { _ in
             isFilePickerShown = true
         }
         .frame(minWidth: 700, minHeight: 220)
+    }
+
+    /// Acquire sandbox scope before loading; PlayerViewModel releases it
+    /// when a new file replaces this one (or on deinit).
+    private func loadWithScope(_ url: URL) {
+        _ = url.startAccessingSecurityScopedResource()
+        vm.load(url: url)
     }
 
     private var supportedTypes: [UTType] {

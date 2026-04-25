@@ -117,9 +117,15 @@ public final class AudioEngine {
     // MARK: – Loop
 
     public func setLoop(_ region: LoopRegion) {
-        loop = region.clamped(to: duration)
+        let clamped = region.clamped(to: duration)
+        loop = clamped
+        // Only re-schedule if the playhead now falls outside the new loop.
+        // Otherwise dragging a loop edge would seek every frame and churn audio.
         if isPlaying {
-            seek(to: max(region.start, currentTime))
+            let now = currentTime
+            if now < clamped.start || now >= clamped.end {
+                seek(to: clamped.start)
+            }
         }
     }
 
