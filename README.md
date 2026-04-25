@@ -3,7 +3,7 @@
 A free, open-source music transcription tool for macOS — built as an alternative to [Transcribe!](https://www.seventhstring.com/xscribe/overview.html).
 
 > *"If you don't practice one day, you will notice it. If you don't practice two days, the audience will notice it."*
-> — Miles Davis
+> — Jascha Heifetz
 
 <!-- screenshot -->
 
