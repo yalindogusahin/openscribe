@@ -24,7 +24,7 @@ let package = Package(
         ),
         // Sadece giriş noktası
         .executableTarget(
-            name: "TranscribeApp",
+            name: "OpenScribe",
             dependencies: ["OpenScribeCore", "OpenScribeUI"],
             path: "Sources/TranscribeApp"
         ),

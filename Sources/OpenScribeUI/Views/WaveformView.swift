@@ -37,7 +37,7 @@ public struct WaveformView: View {
         guard !peaks.isEmpty else {
             let txtCtx = ctx
             txtCtx.draw(
-                Text("Ses dosyası açın  (⌘O)")
+                Text("Open an audio file  (⌘O)")
                     .font(.system(size: 14))
                     .foregroundColor(.secondary),
                 at: CGPoint(x: size.width / 2, y: size.height / 2),

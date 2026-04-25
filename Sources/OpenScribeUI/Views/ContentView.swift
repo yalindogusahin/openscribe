@@ -17,6 +17,17 @@ public struct ContentView: View {
 
             TransportView(vm: vm)
         }
+        .onDrop(of: [.audio, .fileURL], isTargeted: nil) { providers in
+            guard let provider = providers.first else { return false }
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url = url else { return }
+                DispatchQueue.main.async {
+                    _ = url.startAccessingSecurityScopedResource()
+                    vm.load(url: url)
+                }
+            }
+            return true
+        }
         .fileImporter(
             isPresented: $isFilePickerShown,
             allowedContentTypes: supportedTypes,

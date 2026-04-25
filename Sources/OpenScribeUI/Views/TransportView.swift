@@ -35,12 +35,22 @@ public struct TransportView: View {
 
             Divider().frame(height: 32)
 
-            // ---- Hız ----
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Hız: \(String(format: "%.2f", vm.speed))×")
-                    .font(.caption)
-                Slider(value: $vm.speed, in: 0.25...2.0, step: 0.05)
-                    .frame(width: 160)
+            // ---- Speed ----
+            HStack(spacing: 4) {
+                Button("-") {
+                    vm.speed = max(0.25, round((vm.speed - 0.1) * 100) / 100)
+                }
+                .frame(width: 24)
+                VStack(alignment: .center, spacing: 2) {
+                    Text("Speed: \(String(format: "%.2f", vm.speed))×")
+                        .font(.caption)
+                    Slider(value: $vm.speed, in: 0.25...2.0, step: 0.05)
+                        .frame(width: 140)
+                }
+                Button("+") {
+                    vm.speed = min(2.0, round((vm.speed + 0.1) * 100) / 100)
+                }
+                .frame(width: 24)
             }
 
             Divider().frame(height: 32)
@@ -56,8 +66,8 @@ public struct TransportView: View {
 
             Divider().frame(height: 32)
 
-            // ---- Loop temizle ----
-            Button("Loop Temizle") { vm.clearLoop() }
+            // ---- Clear Loop ----
+            Button("Clear Loop") { vm.clearLoop() }
                 .disabled(vm.loop == nil)
                 .keyboardShortcut(.escape, modifiers: [])
 

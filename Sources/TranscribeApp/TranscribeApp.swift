@@ -19,7 +19,7 @@ struct TranscribeApp: App {
                 .keyboardShortcut("o", modifiers: .command)
             }
             CommandMenu("Loop") {
-                Button("Loop Temizle") { vm.clearLoop() }
+                Button("Clear Loop") { vm.clearLoop() }
                     .keyboardShortcut(.escape, modifiers: [])
                     .disabled(vm.loop == nil)
             }
