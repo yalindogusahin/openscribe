@@ -61,6 +61,10 @@ private class KeyboardShortcutService {
                 DispatchQueue.main.async { vm.seek(to: vm.loop?.start ?? 0) }
             case 53: // Escape — clear loop
                 DispatchQueue.main.async { vm.clearLoop() }
+            case 33: // [ — set loop start at playhead
+                DispatchQueue.main.async { vm.setLoopStart(at: vm.currentTime) }
+            case 30: // ] — set loop end at playhead
+                DispatchQueue.main.async { vm.setLoopEnd(at: vm.currentTime) }
             default:
                 break
             }

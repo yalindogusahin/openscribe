@@ -127,6 +127,20 @@ public final class PlayerViewModel: ObservableObject {
         engine.clearLoop()
     }
 
+    public func setLoopStart(at time: TimeInterval) {
+        let t = max(0, min(time, duration))
+        let end = loop?.end ?? duration
+        guard end - t >= 0.05 else { return }
+        setLoop(LoopRegion(start: t, end: end))
+    }
+
+    public func setLoopEnd(at time: TimeInterval) {
+        let t = max(0, min(time, duration))
+        let start = loop?.start ?? 0
+        guard t - start >= 0.05 else { return }
+        setLoop(LoopRegion(start: start, end: t))
+    }
+
     // MARK: – Helpers
 
     public func timeRatio(for time: TimeInterval) -> Double {
