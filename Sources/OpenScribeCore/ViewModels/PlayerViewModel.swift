@@ -31,7 +31,7 @@ public final class PlayerViewModel: ObservableObject {
             // Vertical → zoom centred on cursor
             let cursorRatio = viewWidth > 0 ? mouseX / viewWidth : 0.5
             let cursorNorm  = waveformPanOffset + cursorRatio / waveformZoomLevel
-            let newZoom     = max(1.0, min(256.0, waveformZoomLevel * exp(-dy * 0.04)))
+            let newZoom     = max(1.0, min(1024.0, waveformZoomLevel * exp(-dy * 0.04)))
             let newPan      = max(0.0, min(1.0 - 1.0 / newZoom, cursorNorm - cursorRatio / newZoom))
             waveformZoomLevel = newZoom
             waveformPanOffset = newZoom == 1.0 ? 0.0 : newPan
