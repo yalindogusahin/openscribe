@@ -3,6 +3,7 @@
 #import "AudioEngine.h"
 #import "WaveformView.h"
 #import "SettingsWindowController.h"
+#import "StemSeparator.h"
 
 #import <CommonCrypto/CommonCrypto.h>
 
@@ -37,7 +38,7 @@ struct IsolateState {
 };
 }
 
-@interface AppDelegate () {
+@interface AppDelegate () <StemSeparatorDelegate> {
     std::unique_ptr<AudioEngine> _engine;
     id _keyMonitor;
     BOOL _torndown;
@@ -71,6 +72,16 @@ struct IsolateState {
 @property (nonatomic, strong) NSButton* bassFocusToggle;
 @property (nonatomic, strong) NSSlider* bassFocusSlider;
 @property (nonatomic, strong) NSTextField* bassFocusLabel;
+
+// Stem separation + mixer controls (live in the isolate popover).
+@property (nonatomic, strong) StemSeparator* stemSeparator;
+@property (nonatomic, strong) NSButton* separateStemsButton;
+@property (nonatomic, strong) NSProgressIndicator* separateProgress;
+@property (nonatomic, strong) NSTextField* separateStatusLabel;
+@property (nonatomic, strong) NSArray<NSButton*>* stemMuteButtons;
+@property (nonatomic, strong) NSArray<NSButton*>* stemSoloButtons;
+@property (nonatomic, strong) NSArray<NSSlider*>* stemGainSliders;
+@property (nonatomic, strong) NSArray<NSTextField*>* stemGainLabels;
 @end
 
 @implementation AppDelegate
@@ -112,6 +123,9 @@ struct IsolateState {
 
     self.mainWindow.isolateButton.target = self;
     self.mainWindow.isolateButton.action = @selector(showIsolatePopover:);
+
+    self.stemSeparator = [[StemSeparator alloc] init];
+    self.stemSeparator.delegate = self;
 
     self.mainWindow.startButton.target = self;
     self.mainWindow.startButton.action = @selector(seekToStartClicked:);
@@ -872,6 +886,131 @@ struct IsolateState {
     [container addSubview:self.bassFocusLabel];
 
     y += rowH + 12;
+
+    // -- Stems section -----------------------------------------------------
+    NSView* sep2 = [[NSView alloc] initWithFrame:NSMakeRect(margin, y, w - 2 * margin, 1)];
+    sep2.wantsLayer = YES;
+    sep2.layer.backgroundColor = [NSColor colorWithWhite:0.0 alpha:0.12].CGColor;
+    [container addSubview:sep2];
+    y += 9;
+
+    NSTextField* stemsTitle = [[NSTextField alloc]
+        initWithFrame:NSMakeRect(margin, y, w - 2 * margin, 18)];
+    stemsTitle.bezeled = NO; stemsTitle.editable = NO; stemsTitle.selectable = NO;
+    stemsTitle.drawsBackground = NO;
+    stemsTitle.font = [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold];
+    stemsTitle.textColor = [NSColor labelColor];
+    stemsTitle.stringValue = @"Stems";
+    [container addSubview:stemsTitle];
+    y += 22;
+
+    self.separateStemsButton = [[NSButton alloc] initWithFrame:
+        NSMakeRect(margin, y, 140, 24)];
+    self.separateStemsButton.bezelStyle = NSBezelStyleRounded;
+    self.separateStemsButton.title = @"Separate stems";
+    self.separateStemsButton.target = self;
+    self.separateStemsButton.action = @selector(separateStemsClicked:);
+    [container addSubview:self.separateStemsButton];
+
+    self.separateProgress = [[NSProgressIndicator alloc] initWithFrame:
+        NSMakeRect(margin + 148, y + 4, w - margin - margin - 148, 16)];
+    self.separateProgress.indeterminate = NO;
+    self.separateProgress.minValue = 0.0;
+    self.separateProgress.maxValue = 1.0;
+    self.separateProgress.hidden = YES;
+    [container addSubview:self.separateProgress];
+
+    y += 28;
+
+    self.separateStatusLabel = [[NSTextField alloc] initWithFrame:
+        NSMakeRect(margin, y, w - 2 * margin, 16)];
+    self.separateStatusLabel.bezeled = NO;
+    self.separateStatusLabel.editable = NO;
+    self.separateStatusLabel.selectable = NO;
+    self.separateStatusLabel.drawsBackground = NO;
+    self.separateStatusLabel.font = [NSFont systemFontOfSize:10];
+    self.separateStatusLabel.textColor = [NSColor secondaryLabelColor];
+    self.separateStatusLabel.stringValue = @"";
+    [container addSubview:self.separateStatusLabel];
+    y += 18;
+
+    NSArray<NSString*>* stemNames = @[ @"Vocals", @"Drums", @"Bass", @"Other" ];
+    NSMutableArray<NSButton*>*    mutes  = [NSMutableArray arrayWithCapacity:4];
+    NSMutableArray<NSButton*>*    solos  = [NSMutableArray arrayWithCapacity:4];
+    NSMutableArray<NSSlider*>*    gains  = [NSMutableArray arrayWithCapacity:4];
+    NSMutableArray<NSTextField*>* glabels = [NSMutableArray arrayWithCapacity:4];
+
+    CGFloat nameW = 56;
+    CGFloat btnW  = 30;
+    CGFloat gainSliderW = w - margin - nameW - 4 - btnW - 4 - btnW - 8 - valueW - margin;
+
+    for (NSInteger i = 0; i < 4; i++) {
+        CGFloat x = margin;
+
+        NSTextField* name = [[NSTextField alloc] initWithFrame:
+            NSMakeRect(x, y, nameW, rowH)];
+        name.bezeled = NO; name.editable = NO; name.selectable = NO;
+        name.drawsBackground = NO;
+        name.font = [NSFont systemFontOfSize:11];
+        name.textColor = [NSColor labelColor];
+        name.stringValue = stemNames[i];
+        [container addSubview:name];
+        x += nameW + 4;
+
+        NSButton* mute = [[NSButton alloc] initWithFrame:NSMakeRect(x, y, btnW, rowH)];
+        mute.bezelStyle = NSBezelStyleRounded;
+        mute.title = @"M";
+        mute.font = [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold];
+        mute.tag = i;
+        mute.target = self;
+        mute.action = @selector(stemMuteClicked:);
+        [mute setButtonType:NSButtonTypePushOnPushOff];
+        [container addSubview:mute];
+        [mutes addObject:mute];
+        x += btnW + 4;
+
+        NSButton* solo = [[NSButton alloc] initWithFrame:NSMakeRect(x, y, btnW, rowH)];
+        solo.bezelStyle = NSBezelStyleRounded;
+        solo.title = @"S";
+        solo.font = [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold];
+        solo.tag = i;
+        solo.target = self;
+        solo.action = @selector(stemSoloClicked:);
+        [solo setButtonType:NSButtonTypePushOnPushOff];
+        [container addSubview:solo];
+        [solos addObject:solo];
+        x += btnW + 8;
+
+        NSSlider* gain = [[NSSlider alloc] initWithFrame:NSMakeRect(x, y + 1, gainSliderW, rowH - 2)];
+        gain.minValue = 0.0;
+        gain.maxValue = 1.5;
+        gain.doubleValue = 1.0;
+        gain.continuous = YES;
+        gain.tag = i;
+        gain.target = self;
+        gain.action = @selector(stemGainChanged:);
+        [container addSubview:gain];
+        [gains addObject:gain];
+        x += gainSliderW + 8;
+
+        NSTextField* glabel = [[NSTextField alloc] initWithFrame:NSMakeRect(x, y, valueW, rowH)];
+        glabel.bezeled = NO; glabel.editable = NO; glabel.selectable = NO;
+        glabel.drawsBackground = NO;
+        glabel.font = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightMedium];
+        glabel.alignment = NSTextAlignmentRight;
+        glabel.textColor = [NSColor secondaryLabelColor];
+        glabel.stringValue = @"100%";
+        [container addSubview:glabel];
+        [glabels addObject:glabel];
+
+        y += rowH + 4;
+    }
+    self.stemMuteButtons = mutes;
+    self.stemSoloButtons = solos;
+    self.stemGainSliders = gains;
+    self.stemGainLabels  = glabels;
+
+    y += 8;
     container.frame = NSMakeRect(0, 0, w, y);
 
     NSViewController* vc = [[NSViewController alloc] init];
@@ -903,6 +1042,133 @@ static double hzToSlider(double hz) {
     self.bassFocusSlider.enabled = _isolate.bassFocusEnabled;
     self.bassFocusLabel.stringValue =
         [NSString stringWithFormat:@"%d Hz", (int)std::round(_isolate.bassFocusCutoffHz)];
+    [self syncStemMixerControls];
+}
+
+- (void)syncStemMixerControls {
+    int n = _engine ? _engine->stemCount() : 0;
+    BOOL stemsLoaded = (n >= 4);
+    BOOL hasFile = (self.currentFilePath.length > 0);
+    BOOL running = self.stemSeparator.isRunning;
+
+    self.separateStemsButton.enabled = hasFile && !running && self.stemSeparator.isHelperAvailable;
+    self.separateStemsButton.title = stemsLoaded ? @"Re-separate" : @"Separate stems";
+    if (!self.stemSeparator.isHelperAvailable) {
+        self.separateStatusLabel.stringValue =
+            @"Helper missing — see tools/stem-helper/README.md";
+    } else if (!hasFile) {
+        self.separateStatusLabel.stringValue = @"Load a track first.";
+    } else if (running) {
+        // status set by progress callbacks
+    } else if (stemsLoaded) {
+        self.separateStatusLabel.stringValue = @"Stems loaded — adjust mute / solo / gain.";
+    } else {
+        self.separateStatusLabel.stringValue =
+            @"~5–15 s of audio per second on CPU. Cached after first run.";
+    }
+
+    for (NSInteger i = 0; i < 4; i++) {
+        NSButton* mute = self.stemMuteButtons[i];
+        NSButton* solo = self.stemSoloButtons[i];
+        NSSlider* gain = self.stemGainSliders[i];
+        NSTextField* glabel = self.stemGainLabels[i];
+
+        mute.enabled = stemsLoaded;
+        solo.enabled = stemsLoaded;
+        gain.enabled = stemsLoaded;
+
+        if (stemsLoaded) {
+            mute.state = _engine->stemMuted((int)i)  ? NSControlStateValueOn : NSControlStateValueOff;
+            solo.state = _engine->stemSoloed((int)i) ? NSControlStateValueOn : NSControlStateValueOff;
+            double g = _engine->stemGain((int)i);
+            gain.doubleValue = g;
+            glabel.stringValue = [NSString stringWithFormat:@"%d%%", (int)std::round(g * 100.0)];
+        } else {
+            mute.state = NSControlStateValueOff;
+            solo.state = NSControlStateValueOff;
+            gain.doubleValue = 1.0;
+            glabel.stringValue = @"—";
+        }
+    }
+}
+
+- (void)separateStemsClicked:(id)sender {
+    (void)sender;
+    if (!self.currentFilePath.length) return;
+    if (!_engine) return;
+
+    NSString* input = self.currentFilePath;
+
+    // Cache hit: load instantly without invoking the helper.
+    if ([self.stemSeparator hasCachedStemsForFile:input]) {
+        [self loadStemsFromPaths:[self.stemSeparator cachedStemPathsForFile:input]];
+        return;
+    }
+
+    self.separateProgress.hidden = NO;
+    self.separateProgress.doubleValue = 0.0;
+    self.separateStatusLabel.stringValue = @"Loading model…";
+    [self.stemSeparator separateFile:input];
+    [self syncStemMixerControls];
+    self.separateStemsButton.enabled = NO;
+}
+
+- (void)loadStemsFromPaths:(NSArray<NSString*>*)paths {
+    if (!_engine || paths.count < 4) return;
+    std::vector<std::string> v;
+    v.reserve(4);
+    for (NSString* p in paths) v.emplace_back(p.fileSystemRepresentation);
+    bool ok = _engine->loadStems(v);
+    if (!ok) {
+        self.separateStatusLabel.stringValue = @"Engine refused stems (length mismatch?)";
+        return;
+    }
+    [self syncStemMixerControls];
+}
+
+- (void)stemMuteClicked:(NSButton*)sender {
+    if (!_engine || _engine->stemCount() < 4) return;
+    _engine->setStemMuted((int)sender.tag, sender.state == NSControlStateValueOn);
+    [self syncStemMixerControls];
+}
+
+- (void)stemSoloClicked:(NSButton*)sender {
+    if (!_engine || _engine->stemCount() < 4) return;
+    _engine->setStemSoloed((int)sender.tag, sender.state == NSControlStateValueOn);
+    [self syncStemMixerControls];
+}
+
+- (void)stemGainChanged:(NSSlider*)sender {
+    if (!_engine || _engine->stemCount() < 4) return;
+    _engine->setStemGain((int)sender.tag, sender.doubleValue);
+    [self syncStemMixerControls];
+}
+
+#pragma mark - StemSeparatorDelegate
+
+- (void)stemSeparator:(StemSeparator*)sep progress:(double)frac {
+    (void)sep;
+    self.separateProgress.doubleValue = frac;
+    self.separateStatusLabel.stringValue =
+        [NSString stringWithFormat:@"Separating… %d%%", (int)std::round(frac * 100.0)];
+}
+
+- (void)stemSeparator:(StemSeparator*)sep
+   didFinishWithStemPaths:(NSArray<NSString*>*)paths {
+    (void)sep;
+    self.separateProgress.hidden = YES;
+    self.separateProgress.doubleValue = 0.0;
+    self.separateStatusLabel.stringValue = @"Done.";
+    [self loadStemsFromPaths:paths];
+}
+
+- (void)stemSeparator:(StemSeparator*)sep didFailWithError:(NSString*)message {
+    (void)sep;
+    self.separateProgress.hidden = YES;
+    self.separateStatusLabel.stringValue =
+        [NSString stringWithFormat:@"Failed: %@",
+         [message stringByReplacingOccurrencesOfString:@"\n" withString:@" "]];
+    [self syncStemMixerControls];
 }
 
 - (void)vocalCancelChanged:(NSSlider*)sender {

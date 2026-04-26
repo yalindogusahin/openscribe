@@ -190,9 +190,15 @@ def main() -> int:
         return 4
 
     # AudioFile returns shape (channels, samples) at requested SR.
+    # Capture mean+std BEFORE in-place mutation so we can denormalize the
+    # model output to the original peak. Earlier versions reused `wav.std()`
+    # after `wav /= wav.std()`, which is ~1.0 — that's why every stem came
+    # out volume-boosted.
     ref = wav.mean(0)
-    wav -= ref.mean()
-    wav /= max(1e-8, wav.std())
+    src_mean = ref.mean()
+    src_std  = max(1e-8, float(wav.std()))
+    wav -= src_mean
+    wav /= src_std
 
     t1 = time.time()
     try:
@@ -232,7 +238,7 @@ def main() -> int:
     t_proc = time.time() - t1
     print(f"info: process_s={t_proc:.2f} device={device}", file=sys.stderr)
 
-    sources = sources * wav.std() + ref.mean()
+    sources = sources * src_std + src_mean
 
     # model.sources is e.g. ['drums','bass','other','vocals']
     sr = model.samplerate

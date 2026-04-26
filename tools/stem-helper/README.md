@@ -1,25 +1,31 @@
 # stem-helper
 
-Self-contained CLI that the OpenScribe C++ app launches via `NSTask` to split a
-track into 4 stems (vocals, drums, bass, other) using Facebook's `htdemucs`
-model. Apple-Silicon-only, fully offline (model weights are baked into the
-PyInstaller bundle).
+CLI that the OpenScribe C++ app launches via `NSTask` to split a track into
+4 stems (vocals, drums, bass, other) using Facebook's `htdemucs` model.
+Apple-Silicon-only, fully offline (model weights live next to the script in
+`torch_cache/`).
 
-## Build
+## Setup (dev / on first machine)
 
 ```bash
 cd tools/stem-helper
-./build.sh
+python3.11 -m venv venv
+./venv/bin/pip install -r requirements.txt
+TORCH_HOME="$(pwd)/torch_cache" ./venv/bin/python -c \
+    "from demucs.pretrained import get_model; get_model('htdemucs')"
 ```
 
-Produces `tools/stem-helper/dist/separate/separate` (an arm64 binary in a
-folder of dylibs). The whole `dist/separate/` tree gets shipped inside the
-.app bundle.
+The C++ app finds the helper by walking up from the .app bundle looking for
+`tools/stem-helper/`, or via the `OPENSCRIBE_STEM_HELPER` env var.
 
-## Run
+PyInstaller bundling has been tried twice and reliably hangs at the modulegraph
+analysis pass; we ship the venv directory for now and may revisit packaging
+(py2app / conda-pack) later.
+
+## Run directly
 
 ```
-./separate --input /path/to/song.mp3 --output-dir /tmp/stems/
+./venv/bin/python separate.py --input /path/to/song.mp3 --output-dir /tmp/stems/
 ```
 
 Writes:

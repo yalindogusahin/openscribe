@@ -35,6 +35,7 @@ clang++ -std=c++20 -fobjc-arc \
     src/WaveformView.mm \
     src/TimelineRulerView.mm \
     src/SettingsWindowController.mm \
+    src/StemSeparator.mm \
     -o "build/$EXE_NAME"
 
 echo "Bundling..."
