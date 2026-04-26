@@ -18,8 +18,10 @@
 # aborts. Sticking with the source interpreter and using `pip install
 # --target=...` sidesteps the rpath problem entirely.
 #
-# Models (huge, lazily downloaded by audio-separator/demucs at first use)
-# are NOT bundled — they go to ~/Library/Application Support/OpenScribe/.
+# Models (~760 MB total) are bundled too so first-run separation works
+# without any network. They go inside the helper dir at runtime-discovered
+# sibling locations (separate.py's _resolve_torch_home /
+# _resolve_audio_separator_models pick them up automatically).
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -95,13 +97,47 @@ import demucs, torch, numpy, soundfile
 print('helper deps OK, torch', torch.__version__)
 "
 
-# 7. Strip caches and bytecode that bloat the bundle without runtime value.
+# 7. Pre-download stem-separation models into the bundle. Cached in
+#    build/model-cache/ across runs so re-bundling doesn't re-download
+#    760 MB of weights every time.
+echo "Bundling models (this can take a few minutes on first run)..."
+TORCH_CACHE="$HELPER_DIR/torch_cache"
+ASEP_CACHE="$HELPER_DIR/audio_separator_models"
+MODEL_BUILD_CACHE="build/model-cache"
+mkdir -p "$MODEL_BUILD_CACHE/torch" "$MODEL_BUILD_CACHE/asep"
+
+PYTHONPATH="$SITE" \
+TORCH_HOME="$MODEL_BUILD_CACHE/torch" \
+"$PY" - "$MODEL_BUILD_CACHE/asep" <<'PY'
+import sys, os
+asep_dir = sys.argv[1]
+os.makedirs(asep_dir, exist_ok=True)
+
+# Demucs models live under TORCH_HOME/hub/checkpoints/
+from demucs.pretrained import get_model
+for name in ("htdemucs", "htdemucs_6s"):
+    print(f"  prefetching {name}...", flush=True)
+    get_model(name)
+
+# Roformer goes into audio_separator's model dir
+print("  prefetching mel_band_roformer (BS-Roformer)...", flush=True)
+from audio_separator.separator import Separator
+sep = Separator(output_dir="/tmp", model_file_dir=asep_dir)
+sep.load_model(model_filename="model_bs_roformer_ep_317_sdr_12.9755.ckpt")
+PY
+
+# Move cached models into the bundle (rsync handles existing dirs).
+mkdir -p "$TORCH_CACHE/hub/checkpoints" "$ASEP_CACHE"
+cp -a "$MODEL_BUILD_CACHE/torch/hub/checkpoints/." "$TORCH_CACHE/hub/checkpoints/"
+cp -a "$MODEL_BUILD_CACHE/asep/." "$ASEP_CACHE/"
+
+# 8. Strip caches and bytecode that bloat the bundle without runtime value.
 echo "Pruning caches..."
 find "$SITE" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 find "$SITE" -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true
 find "$SITE" -name "*.pyc" -delete 2>/dev/null || true
 
-# 8. Re-sign — adding files invalidated the existing signature.
+# 9. Re-sign — adding files invalidated the existing signature.
 echo "Re-signing..."
 find "$BUNDLE" -name "._*" -delete
 xattr -cr "$BUNDLE"

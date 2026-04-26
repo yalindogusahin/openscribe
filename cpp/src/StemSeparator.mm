@@ -73,13 +73,6 @@
     return root;
 }
 
-+ (NSString*)modelCacheRoot {
-    NSArray* a = NSSearchPathForDirectoriesInDomains(
-        NSApplicationSupportDirectory, NSUserDomainMask, YES);
-    NSString* base = a.firstObject ?: NSTemporaryDirectory();
-    return [base stringByAppendingPathComponent:@"OpenScribe"];
-}
-
 + (NSString*)sha256OfString:(NSString*)s {
     NSData* d = [s dataUsingEncoding:NSUTF8StringEncoding];
     unsigned char out[CC_SHA256_DIGEST_LENGTH];
@@ -161,18 +154,10 @@
     NSString* script = [_helperDir stringByAppendingPathComponent:@"separate.py"];
     NSString* sitePackages = [self bundledSitePackages];
 
-    // Per-user model cache. Lives outside the .app so:
-    //   1. The bundled helper directory stays untouched (codesign survives),
-    //   2. Models persist across app updates,
-    //   3. Multiple bundle locations share the same downloads.
-    NSString* cacheRoot = [[self class] modelCacheRoot];
-    NSString* torchHome = [cacheRoot stringByAppendingPathComponent:@"torch_cache"];
-    NSString* sepModels = [cacheRoot stringByAppendingPathComponent:@"audio_separator_models"];
-    [NSFileManager.defaultManager createDirectoryAtPath:torchHome
-                            withIntermediateDirectories:YES attributes:nil error:nil];
-    [NSFileManager.defaultManager createDirectoryAtPath:sepModels
-                            withIntermediateDirectories:YES attributes:nil error:nil];
-
+    // Models ship inside the bundle (Resources/stem-helper/torch_cache/ and
+    // Resources/stem-helper/audio_separator_models/). separate.py auto-
+    // discovers those sibling dirs when TORCH_HOME isn't set explicitly,
+    // so first-run separation needs zero network access.
     _task = [[NSTask alloc] init];
     _task.launchPath = py;
     _task.arguments = @[ script,
@@ -182,8 +167,8 @@
     _task.currentDirectoryPath = _helperDir;
 
     NSMutableDictionary* env = [NSProcessInfo.processInfo.environment mutableCopy];
-    env[@"TORCH_HOME"] = torchHome;
-    env[@"OPENSCRIBE_AUDIO_SEPARATOR_MODELS"] = sepModels;
+    [env removeObjectForKey:@"TORCH_HOME"];
+    [env removeObjectForKey:@"OPENSCRIBE_AUDIO_SEPARATOR_MODELS"];
     env[@"PYTHONUNBUFFERED"] = @"1";
     if (sitePackages.length) {
         env[@"PYTHONPATH"] = sitePackages;
