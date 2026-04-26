@@ -73,15 +73,19 @@ struct IsolateState {
 @property (nonatomic, strong) NSSlider* bassFocusSlider;
 @property (nonatomic, strong) NSTextField* bassFocusLabel;
 
-// Stem separation + mixer controls (live in the isolate popover).
+// Stem separation + mixer controls (live in the isolate popover, rebuilt
+// from scratch each time the popover opens).
 @property (nonatomic, strong) StemSeparator* stemSeparator;
 @property (nonatomic, strong) NSButton* separateStemsButton;
 @property (nonatomic, strong) NSProgressIndicator* separateProgress;
 @property (nonatomic, strong) NSTextField* separateStatusLabel;
+@property (nonatomic, strong) NSPopUpButton* stemModelPopup;
 @property (nonatomic, strong) NSArray<NSButton*>* stemMuteButtons;
 @property (nonatomic, strong) NSArray<NSButton*>* stemSoloButtons;
 @property (nonatomic, strong) NSArray<NSSlider*>* stemGainSliders;
 @property (nonatomic, strong) NSArray<NSTextField*>* stemGainLabels;
+@property (nonatomic, copy) NSArray<NSString*>* currentStemNames;
+@property (nonatomic, copy) NSString* stemModel;  // "htdemucs" or "htdemucs_6s"
 @end
 
 @implementation AppDelegate
@@ -126,6 +130,8 @@ struct IsolateState {
 
     self.stemSeparator = [[StemSeparator alloc] init];
     self.stemSeparator.delegate = self;
+    self.stemModel = @"htdemucs";
+    self.currentStemNames = @[];
 
     self.mainWindow.startButton.target = self;
     self.mainWindow.startButton.action = @selector(seekToStartClicked:);
@@ -772,9 +778,10 @@ struct IsolateState {
 }
 
 - (void)showIsolatePopover:(id)sender {
-    if (!self.isolatePopover) {
-        [self buildIsolatePopover];
-    }
+    // Rebuild on every open so stem rows match the engine's current
+    // stemCount() and the helper's discovered stem names.
+    if (self.isolatePopover.isShown) [self.isolatePopover close];
+    [self buildIsolatePopover];
     [self syncIsolateControls];
     NSView* anchor = (NSView*)sender;
     [self.isolatePopover showRelativeToRect:anchor.bounds
@@ -904,6 +911,21 @@ struct IsolateState {
     [container addSubview:stemsTitle];
     y += 22;
 
+    // Model selector. New separations use the chosen model; cached results
+    // for other models stay in their own subdir under stems/<sha>/<model>/.
+    self.stemModelPopup = [[NSPopUpButton alloc] initWithFrame:
+        NSMakeRect(margin, y, w - 2 * margin, 24)];
+    [self.stemModelPopup addItemWithTitle:@"Standard (4 stems)"];
+    self.stemModelPopup.lastItem.representedObject = @"htdemucs";
+    [self.stemModelPopup addItemWithTitle:@"+ Guitar / Piano (6 stems, slower)"];
+    self.stemModelPopup.lastItem.representedObject = @"htdemucs_6s";
+    self.stemModelPopup.target = self;
+    self.stemModelPopup.action = @selector(stemModelChanged:);
+    NSInteger sel = [self.stemModel isEqualToString:@"htdemucs_6s"] ? 1 : 0;
+    [self.stemModelPopup selectItemAtIndex:sel];
+    [container addSubview:self.stemModelPopup];
+    y += 28;
+
     self.separateStemsButton = [[NSButton alloc] initWithFrame:
         NSMakeRect(margin, y, 140, 24)];
     self.separateStemsButton.bezelStyle = NSBezelStyleRounded;
@@ -934,76 +956,81 @@ struct IsolateState {
     [container addSubview:self.separateStatusLabel];
     y += 18;
 
-    NSArray<NSString*>* stemNames = @[ @"Vocals", @"Drums", @"Bass", @"Other" ];
-    NSMutableArray<NSButton*>*    mutes  = [NSMutableArray arrayWithCapacity:4];
-    NSMutableArray<NSButton*>*    solos  = [NSMutableArray arrayWithCapacity:4];
-    NSMutableArray<NSSlider*>*    gains  = [NSMutableArray arrayWithCapacity:4];
-    NSMutableArray<NSTextField*>* glabels = [NSMutableArray arrayWithCapacity:4];
+    // Mixer rows — only built if stems are currently loaded.
+    int liveStems = _engine ? _engine->stemCount() : 0;
+    BOOL hasMixer = (liveStems >= 2) && (self.currentStemNames.count == (NSUInteger)liveStems);
 
-    CGFloat nameW = 56;
-    CGFloat btnW  = 30;
-    CGFloat gainSliderW = w - margin - nameW - 4 - btnW - 4 - btnW - 8 - valueW - margin;
+    NSMutableArray<NSButton*>*    mutes  = [NSMutableArray array];
+    NSMutableArray<NSButton*>*    solos  = [NSMutableArray array];
+    NSMutableArray<NSSlider*>*    gains  = [NSMutableArray array];
+    NSMutableArray<NSTextField*>* glabels = [NSMutableArray array];
 
-    for (NSInteger i = 0; i < 4; i++) {
-        CGFloat x = margin;
+    if (hasMixer) {
+        CGFloat nameW = 56;
+        CGFloat btnW  = 30;
+        CGFloat gainSliderW = w - margin - nameW - 4 - btnW - 4 - btnW - 8 - valueW - margin;
 
-        NSTextField* name = [[NSTextField alloc] initWithFrame:
-            NSMakeRect(x, y, nameW, rowH)];
-        name.bezeled = NO; name.editable = NO; name.selectable = NO;
-        name.drawsBackground = NO;
-        name.font = [NSFont systemFontOfSize:11];
-        name.textColor = [NSColor labelColor];
-        name.stringValue = stemNames[i];
-        [container addSubview:name];
-        x += nameW + 4;
+        for (NSInteger i = 0; i < liveStems; i++) {
+            CGFloat x = margin;
 
-        NSButton* mute = [[NSButton alloc] initWithFrame:NSMakeRect(x, y, btnW, rowH)];
-        mute.bezelStyle = NSBezelStyleRounded;
-        mute.title = @"M";
-        mute.font = [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold];
-        mute.tag = i;
-        mute.target = self;
-        mute.action = @selector(stemMuteClicked:);
-        [mute setButtonType:NSButtonTypePushOnPushOff];
-        [container addSubview:mute];
-        [mutes addObject:mute];
-        x += btnW + 4;
+            NSTextField* name = [[NSTextField alloc] initWithFrame:
+                NSMakeRect(x, y, nameW, rowH)];
+            name.bezeled = NO; name.editable = NO; name.selectable = NO;
+            name.drawsBackground = NO;
+            name.font = [NSFont systemFontOfSize:11];
+            name.textColor = [NSColor labelColor];
+            name.stringValue = [self.currentStemNames[i] capitalizedString];
+            [container addSubview:name];
+            x += nameW + 4;
 
-        NSButton* solo = [[NSButton alloc] initWithFrame:NSMakeRect(x, y, btnW, rowH)];
-        solo.bezelStyle = NSBezelStyleRounded;
-        solo.title = @"S";
-        solo.font = [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold];
-        solo.tag = i;
-        solo.target = self;
-        solo.action = @selector(stemSoloClicked:);
-        [solo setButtonType:NSButtonTypePushOnPushOff];
-        [container addSubview:solo];
-        [solos addObject:solo];
-        x += btnW + 8;
+            NSButton* mute = [[NSButton alloc] initWithFrame:NSMakeRect(x, y, btnW, rowH)];
+            mute.bezelStyle = NSBezelStyleRounded;
+            mute.title = @"M";
+            mute.font = [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold];
+            mute.tag = i;
+            mute.target = self;
+            mute.action = @selector(stemMuteClicked:);
+            [mute setButtonType:NSButtonTypePushOnPushOff];
+            [container addSubview:mute];
+            [mutes addObject:mute];
+            x += btnW + 4;
 
-        NSSlider* gain = [[NSSlider alloc] initWithFrame:NSMakeRect(x, y + 1, gainSliderW, rowH - 2)];
-        gain.minValue = 0.0;
-        gain.maxValue = 1.5;
-        gain.doubleValue = 1.0;
-        gain.continuous = YES;
-        gain.tag = i;
-        gain.target = self;
-        gain.action = @selector(stemGainChanged:);
-        [container addSubview:gain];
-        [gains addObject:gain];
-        x += gainSliderW + 8;
+            NSButton* solo = [[NSButton alloc] initWithFrame:NSMakeRect(x, y, btnW, rowH)];
+            solo.bezelStyle = NSBezelStyleRounded;
+            solo.title = @"S";
+            solo.font = [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold];
+            solo.tag = i;
+            solo.target = self;
+            solo.action = @selector(stemSoloClicked:);
+            [solo setButtonType:NSButtonTypePushOnPushOff];
+            [container addSubview:solo];
+            [solos addObject:solo];
+            x += btnW + 8;
 
-        NSTextField* glabel = [[NSTextField alloc] initWithFrame:NSMakeRect(x, y, valueW, rowH)];
-        glabel.bezeled = NO; glabel.editable = NO; glabel.selectable = NO;
-        glabel.drawsBackground = NO;
-        glabel.font = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightMedium];
-        glabel.alignment = NSTextAlignmentRight;
-        glabel.textColor = [NSColor secondaryLabelColor];
-        glabel.stringValue = @"100%";
-        [container addSubview:glabel];
-        [glabels addObject:glabel];
+            NSSlider* gain = [[NSSlider alloc] initWithFrame:NSMakeRect(x, y + 1, gainSliderW, rowH - 2)];
+            gain.minValue = 0.0;
+            gain.maxValue = 1.5;
+            gain.doubleValue = 1.0;
+            gain.continuous = YES;
+            gain.tag = i;
+            gain.target = self;
+            gain.action = @selector(stemGainChanged:);
+            [container addSubview:gain];
+            [gains addObject:gain];
+            x += gainSliderW + 8;
 
-        y += rowH + 4;
+            NSTextField* glabel = [[NSTextField alloc] initWithFrame:NSMakeRect(x, y, valueW, rowH)];
+            glabel.bezeled = NO; glabel.editable = NO; glabel.selectable = NO;
+            glabel.drawsBackground = NO;
+            glabel.font = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightMedium];
+            glabel.alignment = NSTextAlignmentRight;
+            glabel.textColor = [NSColor secondaryLabelColor];
+            glabel.stringValue = @"100%";
+            [container addSubview:glabel];
+            [glabels addObject:glabel];
+
+            y += rowH + 4;
+        }
     }
     self.stemMuteButtons = mutes;
     self.stemSoloButtons = solos;
@@ -1047,12 +1074,16 @@ static double hzToSlider(double hz) {
 
 - (void)syncStemMixerControls {
     int n = _engine ? _engine->stemCount() : 0;
-    BOOL stemsLoaded = (n >= 4);
+    BOOL stemsLoaded = (n >= 2);
     BOOL hasFile = (self.currentFilePath.length > 0);
     BOOL running = self.stemSeparator.isRunning;
 
     self.separateStemsButton.enabled = hasFile && !running && self.stemSeparator.isHelperAvailable;
     self.separateStemsButton.title = stemsLoaded ? @"Re-separate" : @"Separate stems";
+
+    BOOL cachedForChosenModel = hasFile &&
+        [self.stemSeparator hasCachedStemsForFile:self.currentFilePath model:self.stemModel];
+
     if (!self.stemSeparator.isHelperAvailable) {
         self.separateStatusLabel.stringValue =
             @"Helper missing — see tools/stem-helper/README.md";
@@ -1060,6 +1091,9 @@ static double hzToSlider(double hz) {
         self.separateStatusLabel.stringValue = @"Load a track first.";
     } else if (running) {
         // status set by progress callbacks
+    } else if (cachedForChosenModel) {
+        self.separateStatusLabel.stringValue =
+            @"Cached — click to load instantly.";
     } else if (stemsLoaded) {
         self.separateStatusLabel.stringValue = @"Stems loaded — adjust mute / solo / gain.";
     } else {
@@ -1067,17 +1101,19 @@ static double hzToSlider(double hz) {
             @"~5–15 s of audio per second on CPU. Cached after first run.";
     }
 
-    for (NSInteger i = 0; i < 4; i++) {
+    NSUInteger rows = self.stemMuteButtons.count;
+    for (NSUInteger i = 0; i < rows; i++) {
         NSButton* mute = self.stemMuteButtons[i];
         NSButton* solo = self.stemSoloButtons[i];
         NSSlider* gain = self.stemGainSliders[i];
         NSTextField* glabel = self.stemGainLabels[i];
 
-        mute.enabled = stemsLoaded;
-        solo.enabled = stemsLoaded;
-        gain.enabled = stemsLoaded;
+        BOOL active = stemsLoaded && (NSInteger)i < n;
+        mute.enabled = active;
+        solo.enabled = active;
+        gain.enabled = active;
 
-        if (stemsLoaded) {
+        if (active) {
             mute.state = _engine->stemMuted((int)i)  ? NSControlStateValueOn : NSControlStateValueOff;
             solo.state = _engine->stemSoloed((int)i) ? NSControlStateValueOn : NSControlStateValueOff;
             double g = _engine->stemGain((int)i);
@@ -1092,54 +1128,77 @@ static double hzToSlider(double hz) {
     }
 }
 
+- (void)stemModelChanged:(NSPopUpButton*)sender {
+    NSString* m = sender.selectedItem.representedObject;
+    if (m.length) self.stemModel = m;
+    [self syncStemMixerControls];
+}
+
 - (void)separateStemsClicked:(id)sender {
     (void)sender;
     if (!self.currentFilePath.length) return;
     if (!_engine) return;
 
     NSString* input = self.currentFilePath;
+    NSString* model = self.stemModel.length ? self.stemModel : @"htdemucs";
 
     // Cache hit: load instantly without invoking the helper.
-    if ([self.stemSeparator hasCachedStemsForFile:input]) {
-        [self loadStemsFromPaths:[self.stemSeparator cachedStemPathsForFile:input]];
+    if ([self.stemSeparator hasCachedStemsForFile:input model:model]) {
+        [self loadStemsFromSeparation:[self.stemSeparator cachedStemsForFile:input model:model]];
         return;
     }
 
     self.separateProgress.hidden = NO;
     self.separateProgress.doubleValue = 0.0;
     self.separateStatusLabel.stringValue = @"Loading model…";
-    [self.stemSeparator separateFile:input];
+    [self.stemSeparator separateFile:input model:model];
     [self syncStemMixerControls];
     self.separateStemsButton.enabled = NO;
 }
 
-- (void)loadStemsFromPaths:(NSArray<NSString*>*)paths {
-    if (!_engine || paths.count < 4) return;
+- (void)loadStemsFromSeparation:(NSArray<StemSeparation*>*)stems {
+    if (!_engine || stems.count < 2) return;
+
     std::vector<std::string> v;
-    v.reserve(4);
-    for (NSString* p in paths) v.emplace_back(p.fileSystemRepresentation);
+    v.reserve(stems.count);
+    NSMutableArray<NSString*>* names = [NSMutableArray arrayWithCapacity:stems.count];
+    for (StemSeparation* s in stems) {
+        v.emplace_back(s.path.fileSystemRepresentation);
+        [names addObject:s.name];
+    }
     bool ok = _engine->loadStems(v);
     if (!ok) {
         self.separateStatusLabel.stringValue = @"Engine refused stems (length mismatch?)";
         return;
     }
-    [self syncStemMixerControls];
+    self.currentStemNames = names;
+
+    // The popover layout depends on stem count; rebuild it so the new mixer
+    // rows appear (or change in count). If the popover isn't shown, this is
+    // a no-op until next open.
+    if (self.isolatePopover.isShown) {
+        NSView* anchor = self.mainWindow.isolateButton;
+        [self.isolatePopover close];
+        [self showIsolatePopover:anchor];
+    } else {
+        [self syncStemMixerControls];
+    }
 }
 
 - (void)stemMuteClicked:(NSButton*)sender {
-    if (!_engine || _engine->stemCount() < 4) return;
+    if (!_engine || _engine->stemCount() < 2) return;
     _engine->setStemMuted((int)sender.tag, sender.state == NSControlStateValueOn);
     [self syncStemMixerControls];
 }
 
 - (void)stemSoloClicked:(NSButton*)sender {
-    if (!_engine || _engine->stemCount() < 4) return;
+    if (!_engine || _engine->stemCount() < 2) return;
     _engine->setStemSoloed((int)sender.tag, sender.state == NSControlStateValueOn);
     [self syncStemMixerControls];
 }
 
 - (void)stemGainChanged:(NSSlider*)sender {
-    if (!_engine || _engine->stemCount() < 4) return;
+    if (!_engine || _engine->stemCount() < 2) return;
     _engine->setStemGain((int)sender.tag, sender.doubleValue);
     [self syncStemMixerControls];
 }
@@ -1154,12 +1213,13 @@ static double hzToSlider(double hz) {
 }
 
 - (void)stemSeparator:(StemSeparator*)sep
-   didFinishWithStemPaths:(NSArray<NSString*>*)paths {
-    (void)sep;
+   didFinishWithStems:(NSArray<StemSeparation*>*)stems
+                model:(NSString*)model {
+    (void)sep; (void)model;
     self.separateProgress.hidden = YES;
     self.separateProgress.doubleValue = 0.0;
     self.separateStatusLabel.stringValue = @"Done.";
-    [self loadStemsFromPaths:paths];
+    [self loadStemsFromSeparation:stems];
 }
 
 - (void)stemSeparator:(StemSeparator*)sep didFailWithError:(NSString*)message {
@@ -1631,6 +1691,7 @@ static double hzToSlider(double hz) {
         [self updateSmartLoopButtonTint];
         _isolate = IsolateState{};
         [self applyIsolateToEngine];
+        self.currentStemNames = @[];
         [self.mainWindow setTitle:
             [NSString stringWithFormat:@"OpenScribe Native — %@", path.lastPathComponent]];
         [self.mainWindow.waveformView reloadFromEngine];

@@ -1,9 +1,8 @@
 #import "StemSeparator.h"
 #import <CommonCrypto/CommonDigest.h>
 
-static NSString* const kStemNamesInEngineOrder[4] = {
-    @"vocals.wav", @"drums.wav", @"bass.wav", @"other.wav",
-};
+@implementation StemSeparation
+@end
 
 @implementation StemSeparator {
     NSTask*    _task;
@@ -11,6 +10,7 @@ static NSString* const kStemNamesInEngineOrder[4] = {
     NSPipe*    _stderrPipe;
     NSMutableString* _stdoutTail;
     NSMutableString* _stderrTail;
+    NSString*  _runningModel;
 }
 
 - (instancetype)init {
@@ -59,32 +59,52 @@ static NSString* const kStemNamesInEngineOrder[4] = {
     return hex;
 }
 
-- (NSString*)cacheDirForFile:(NSString*)inputPath {
+- (NSString*)cacheDirForFile:(NSString*)inputPath model:(NSString*)model {
     NSString* canon = inputPath.stringByStandardizingPath;
     NSString* hash = [[self class] sha256OfString:canon];
-    return [[[self class] cacheRoot] stringByAppendingPathComponent:hash];
+    NSString* safeModel = model.length ? model : @"htdemucs";
+    return [[[[self class] cacheRoot] stringByAppendingPathComponent:hash]
+                                      stringByAppendingPathComponent:safeModel];
 }
 
-- (NSArray<NSString*>*)cachedStemPathsForFile:(NSString*)inputPath {
-    NSString* dir = [self cacheDirForFile:inputPath];
-    NSMutableArray* out = [NSMutableArray arrayWithCapacity:4];
-    for (int i = 0; i < 4; i++) {
-        [out addObject:[dir stringByAppendingPathComponent:kStemNamesInEngineOrder[i]]];
+- (NSArray<StemSeparation*>*)cachedStemsForFile:(NSString*)inputPath
+                                          model:(NSString*)model {
+    NSString* dir = [self cacheDirForFile:inputPath model:model];
+    NSString* manifest = [dir stringByAppendingPathComponent:@"stems.json"];
+    NSData* data = [NSData dataWithContentsOfFile:manifest];
+    if (!data) return @[];
+    NSError* err = nil;
+    NSDictionary* root = [NSJSONSerialization JSONObjectWithData:data
+                                                         options:0 error:&err];
+    if (![root isKindOfClass:NSDictionary.class]) return @[];
+    NSArray* stems = root[@"stems"];
+    if (![stems isKindOfClass:NSArray.class]) return @[];
+
+    NSFileManager* fm = NSFileManager.defaultManager;
+    NSMutableArray<StemSeparation*>* out = [NSMutableArray arrayWithCapacity:stems.count];
+    for (NSDictionary* entry in stems) {
+        if (![entry isKindOfClass:NSDictionary.class]) continue;
+        NSString* name = entry[@"name"];
+        NSString* file = entry[@"file"];
+        if (!name.length || !file.length) continue;
+        NSString* full = [dir stringByAppendingPathComponent:file];
+        if (![fm fileExistsAtPath:full]) return @[]; // partial cache → reject
+        StemSeparation* s = [[StemSeparation alloc] init];
+        s.name = name;
+        s.path = full;
+        [out addObject:s];
     }
     return out;
 }
 
-- (BOOL)hasCachedStemsForFile:(NSString*)inputPath {
-    NSFileManager* fm = NSFileManager.defaultManager;
-    for (NSString* p in [self cachedStemPathsForFile:inputPath]) {
-        if (![fm fileExistsAtPath:p]) return NO;
-    }
-    return YES;
+- (BOOL)hasCachedStemsForFile:(NSString*)inputPath model:(NSString*)model {
+    NSArray* cached = [self cachedStemsForFile:inputPath model:model];
+    return cached.count >= 2;
 }
 
 #pragma mark - run
 
-- (void)separateFile:(NSString*)inputPath {
+- (void)separateFile:(NSString*)inputPath model:(NSString*)model {
     if (!self.isHelperAvailable) {
         [self emitError:@"Stem helper not found. Expected tools/stem-helper/ next to the app."];
         return;
@@ -93,8 +113,10 @@ static NSString* const kStemNamesInEngineOrder[4] = {
         [self emitError:@"A separation is already running."];
         return;
     }
+    NSString* m = model.length ? model : @"htdemucs";
+    _runningModel = m;
 
-    NSString* outDir = [self cacheDirForFile:inputPath];
+    NSString* outDir = [self cacheDirForFile:inputPath model:m];
     [NSFileManager.defaultManager createDirectoryAtPath:outDir
                             withIntermediateDirectories:YES
                                              attributes:nil error:nil];
@@ -107,7 +129,8 @@ static NSString* const kStemNamesInEngineOrder[4] = {
     _task.launchPath = py;
     _task.arguments = @[ script,
                          @"--input", inputPath,
-                         @"--output-dir", outDir ];
+                         @"--output-dir", outDir,
+                         @"--model", m ];
     _task.currentDirectoryPath = _helperDir;
 
     NSMutableDictionary* env = [NSProcessInfo.processInfo.environment mutableCopy];
@@ -137,9 +160,10 @@ static NSString* const kStemNamesInEngineOrder[4] = {
     };
 
     NSString* expectedInput = [inputPath copy];
+    NSString* expectedModel = [m copy];
     _task.terminationHandler = ^(NSTask* t) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            [weakSelf taskDidExit:t forInput:expectedInput];
+            [weakSelf taskDidExit:t forInput:expectedInput model:expectedModel];
         });
     };
 
@@ -185,13 +209,14 @@ static NSString* const kStemNamesInEngineOrder[4] = {
     }
 }
 
-- (void)taskDidExit:(NSTask*)t forInput:(NSString*)inputPath {
+- (void)taskDidExit:(NSTask*)t forInput:(NSString*)inputPath model:(NSString*)model {
     _stdoutPipe.fileHandleForReading.readabilityHandler = nil;
     _stderrPipe.fileHandleForReading.readabilityHandler = nil;
 
     int status = t.terminationStatus;
     NSTaskTerminationReason reason = t.terminationReason;
     _task = nil;
+    _runningModel = nil;
 
     if (reason != NSTaskTerminationReasonExit || status != 0) {
         NSString* tail = [_stderrTail copy];
@@ -206,18 +231,14 @@ static NSString* const kStemNamesInEngineOrder[4] = {
         return;
     }
 
-    NSArray<NSString*>* paths = [self cachedStemPathsForFile:inputPath];
-    NSFileManager* fm = NSFileManager.defaultManager;
-    for (NSString* p in paths) {
-        if (![fm fileExistsAtPath:p]) {
-            [self emitError:[NSString stringWithFormat:@"Helper succeeded but stem missing: %@",
-                             p.lastPathComponent]];
-            return;
-        }
+    NSArray<StemSeparation*>* stems = [self cachedStemsForFile:inputPath model:model];
+    if (stems.count < 2) {
+        [self emitError:@"Helper succeeded but stems.json is missing or empty."];
+        return;
     }
 
-    if ([_delegate respondsToSelector:@selector(stemSeparator:didFinishWithStemPaths:)]) {
-        [_delegate stemSeparator:self didFinishWithStemPaths:paths];
+    if ([_delegate respondsToSelector:@selector(stemSeparator:didFinishWithStems:model:)]) {
+        [_delegate stemSeparator:self didFinishWithStems:stems model:model];
     }
 }
 

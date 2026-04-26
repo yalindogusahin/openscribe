@@ -2,21 +2,30 @@
 
 @class StemSeparator;
 
+// One result entry: human-readable stem name (e.g. "vocals") + absolute path
+// to the WAV file. The array's order is the order to feed to the audio engine
+// and to render in the mixer UI.
+@interface StemSeparation : NSObject
+@property (nonatomic, copy) NSString* name;
+@property (nonatomic, copy) NSString* path;
+@end
+
 @protocol StemSeparatorDelegate <NSObject>
 - (void)stemSeparator:(StemSeparator*)sep progress:(double)frac;
 - (void)stemSeparator:(StemSeparator*)sep
-   didFinishWithStemPaths:(NSArray<NSString*>*)paths;
+   didFinishWithStems:(NSArray<StemSeparation*>*)stems
+                model:(NSString*)model;
 - (void)stemSeparator:(StemSeparator*)sep didFailWithError:(NSString*)message;
 @end
 
 // Wraps the offline htdemucs helper at tools/stem-helper/. Resolves a helper
 // directory at init time (env var → walk up from app bundle → dev fallback)
-// and exposes per-file cached output under
-// ~/Library/Application Support/OpenScribe/stems/<sha256>/.
+// and exposes per-(file, model) cached output under
+// ~/Library/Application Support/OpenScribe/stems/<sha256>/<model>/.
 //
-// All public methods are main-thread-safe; delegate callbacks fire on the main
-// queue. Stem path arrays are returned in engine index order:
-// [vocals, drums, bass, other].
+// All public methods are main-thread-safe; delegate callbacks fire on the
+// main queue. The result array is in the order chosen by the helper's
+// stems.json manifest (vocals first, "other" last by convention).
 @interface StemSeparator : NSObject
 
 @property (nonatomic, weak) id<StemSeparatorDelegate> delegate;
@@ -26,10 +35,11 @@
 
 - (instancetype)init;
 
-- (NSArray<NSString*>*)cachedStemPathsForFile:(NSString*)inputPath;
-- (BOOL)hasCachedStemsForFile:(NSString*)inputPath;
+- (BOOL)hasCachedStemsForFile:(NSString*)inputPath model:(NSString*)model;
+- (NSArray<StemSeparation*>*)cachedStemsForFile:(NSString*)inputPath
+                                          model:(NSString*)model;
 
-- (void)separateFile:(NSString*)inputPath;
+- (void)separateFile:(NSString*)inputPath model:(NSString*)model;
 - (void)cancel;
 
 @end

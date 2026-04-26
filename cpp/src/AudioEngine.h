@@ -10,20 +10,23 @@
 class AudioEngine {
 public:
     // Maximum number of stems supported. Single-file load uses 1 stem;
-    // stem-separated load uses 4 (vocals, drums, bass, other).
-    static constexpr int kMaxStems = 4;
+    // stem-separated load uses 4 (htdemucs: vocals/drums/bass/other) or
+    // 6 (htdemucs_6s: vocals/drums/bass/guitar/piano/other).
+    static constexpr int kMaxStems = 6;
 
     AudioEngine();
     ~AudioEngine();
 
     bool load(const std::string& path);
 
-    // 4-stem load. Each path is loaded into its own buffer; all four must
-    // have identical frame counts and sample rates (the helper guarantees
-    // this). Returns false if any file fails to open or lengths mismatch.
+    // Multi-stem load. Each path is loaded into its own buffer; all paths
+    // must have identical frame counts and sample rates (the helper
+    // guarantees this). Returns false if any file fails to open, lengths
+    // mismatch, or paths.size() exceeds kMaxStems.
     // On success, replaces any prior load() / loadStems() state.
     //
-    // Index convention: 0=vocals, 1=drums, 2=bass, 3=other.
+    // The engine treats stems as opaque; the caller decides what each
+    // index represents and keeps a parallel name array for the UI.
     bool loadStems(const std::vector<std::string>& paths);
 
     int stemCount() const;             // 0 if nothing loaded; 1 after load(); 4 after loadStems()

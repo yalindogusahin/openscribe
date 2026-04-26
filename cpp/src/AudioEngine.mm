@@ -331,14 +331,15 @@ bool AudioEngine::load(const std::string& path) {
 }
 
 bool AudioEngine::loadStems(const std::vector<std::string>& paths) {
-    if (paths.size() != static_cast<size_t>(kMaxStems)) return false;
+    const int n = static_cast<int>(paths.size());
+    if (n < 2 || n > kMaxStems) return false;
 
     AudioOutputUnitStop(outputUnit_);
     playing_.store(false);
 
-    std::vector<std::vector<float>> bufs(kMaxStems);
+    std::vector<std::vector<float>> bufs(n);
     int64_t framesCommon = -1;
-    for (int i = 0; i < kMaxStems; ++i) {
+    for (int i = 0; i < n; ++i) {
         int64_t f = 0;
         if (!DecodeFileToStereoFloat(paths[i], sampleRate_, bufs[i], f)) {
             return false;
@@ -351,7 +352,7 @@ bool AudioEngine::loadStems(const std::vector<std::string>& paths) {
     }
 
     stemSamples_ = std::move(bufs);
-    stemCount_ = kMaxStems;
+    stemCount_ = n;
     totalFrames_ = framesCommon < 0 ? 0 : framesCommon;
 
     for (int i = 0; i < kMaxStems; ++i) {
@@ -587,8 +588,8 @@ void AudioEngine::render(uint32_t numFrames, AudioBufferList* ioData) {
     // is just a sum-of-products.
     const int nStems = stemCount_;
     const bool soloMode = anySoloed_.load() > 0;
-    float effGain[kMaxStems] = {0.0f, 0.0f, 0.0f, 0.0f};
-    const float* stemPtr[kMaxStems] = {nullptr, nullptr, nullptr, nullptr};
+    float effGain[kMaxStems] = {};
+    const float* stemPtr[kMaxStems] = {};
     for (int i = 0; i < nStems; ++i) {
         const float g = stemGain_[i].load();
         const bool muted = stemMuted_[i].load();

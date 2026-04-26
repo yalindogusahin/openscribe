@@ -240,7 +240,8 @@ def main() -> int:
 
     sources = sources * src_std + src_mean
 
-    # model.sources is e.g. ['drums','bass','other','vocals']
+    # model.sources is e.g. ['drums','bass','other','vocals'] for htdemucs
+    # or ['drums','bass','other','vocals','guitar','piano'] for htdemucs_6s.
     sr = model.samplerate
     written = []
     for name, source in zip(model.sources, sources):
@@ -248,11 +249,33 @@ def main() -> int:
         # soundfile expects (samples, channels)
         audio = source.detach().cpu().numpy().T
         sf.write(str(out_path), audio, sr, subtype="PCM_16")
-        written.append(out_path)
+        written.append((name, out_path))
+
+    # Write a manifest listing stems in a stable display order (vocals first,
+    # "other" last). The C++ caller reads this to populate the mixer rows
+    # without having to know per-model ordering rules.
+    import json
+    display_order = ["vocals", "drums", "bass", "guitar", "piano", "other"]
+    by_name = {n: p for n, p in written}
+    ordered = [
+        {"name": n, "file": by_name[n].name}
+        for n in display_order
+        if n in by_name
+    ]
+    # Append anything unexpected at the end so we don't silently drop a stem.
+    for n, p in written:
+        if n not in display_order:
+            ordered.append({"name": n, "file": p.name})
+    manifest = {
+        "model": args.model,
+        "samplerate": sr,
+        "stems": ordered,
+    }
+    (out_dir / "stems.json").write_text(json.dumps(manifest, indent=2))
 
     _emit_progress(1.0)
-    for p_ in written:
-        print(f"info: wrote {p_}", file=sys.stderr)
+    for n, p_ in written:
+        print(f"info: wrote {n}={p_}", file=sys.stderr)
     return 0
 
 
