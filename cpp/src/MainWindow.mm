@@ -21,6 +21,7 @@
 @property (nonatomic, strong, readwrite) NSTextField* loopBadge;
 @property (nonatomic, strong, readwrite) NSButton* helpButton;
 @property (nonatomic, strong, readwrite) NSButton* smartLoopButton;
+@property (nonatomic, strong, readwrite) NSButton* isolateButton;
 @end
 
 @implementation MainWindow
@@ -251,6 +252,17 @@ static NSButton* makeIconButton(NSRect frame, NSString* symbol, CGFloat pointSiz
     self.smartLoopButton.toolTip = @"Smart loop — gradually increase speed across reps";
     self.smartLoopButton.autoresizingMask = NSViewMaxXMargin | NSViewMaxYMargin;
     [self.contentView addSubview:self.smartLoopButton];
+
+    // Isolate (filter) button — to the right of smart loop.
+    self.isolateButton = makeIconButton(
+        NSMakeRect(margin + 2 * (iconSize + 8),
+                   transportY + (transportRowH - iconSize)/2,
+                   iconSize, iconSize),
+        @"slider.horizontal.3", 15);
+    self.isolateButton.contentTintColor = [NSColor colorWithWhite:0.65 alpha:1.0];
+    self.isolateButton.toolTip = @"Isolate — vocal cancel & bass focus";
+    self.isolateButton.autoresizingMask = NSViewMaxXMargin | NSViewMaxYMargin;
+    [self.contentView addSubview:self.isolateButton];
 
     // Waveform fills everything above the transport row.
     CGFloat waveBottom = transportY + transportRowH + gap;

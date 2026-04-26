@@ -26,6 +26,7 @@ class AudioEngine;
 @property (nonatomic, strong, readonly) NSTextField* loopBadge;
 @property (nonatomic, strong, readonly) NSButton* helpButton;
 @property (nonatomic, strong, readonly) NSButton* smartLoopButton;
+@property (nonatomic, strong, readonly) NSButton* isolateButton;
 
 - (void)updatePlayPauseButton:(BOOL)playing;
 @end

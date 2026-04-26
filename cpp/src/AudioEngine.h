@@ -37,6 +37,17 @@ public:
     void setVolume(double v);     // linear gain, 0..1.5
     double volume() const { return volume_.load(); }
 
+    // 0 = no effect, 1 = full center (mid) cancel — pulls vocals/kick
+    // panned dead-center down to silence by subtracting the L+R sum.
+    void setCenterCancelAmount(double amount);
+    double centerCancelAmount() const { return centerCancel_.load(); }
+
+    // One-pole low-pass for "bass focus" practice. Frequency in Hz.
+    void setLowPassEnabled(bool enabled);
+    bool lowPassEnabled() const { return lpEnabled_.load(); }
+    void setLowPassFrequencyHz(double hz);
+    double lowPassFrequencyHz() const { return lpFreqHz_.load(); }
+
     double duration() const;
     double currentTime() const;
     bool isPlaying() const;
@@ -94,4 +105,14 @@ private:
     std::atomic<int64_t> loopWrapCount_{0};
     std::atomic<bool> playing_{false};
     std::atomic<float> volume_{1.0f};
+
+    // Filter parameters — written by main thread, read on audio thread.
+    std::atomic<float> centerCancel_{0.0f};
+    std::atomic<bool>  lpEnabled_{false};
+    std::atomic<float> lpFreqHz_{500.0f};
+    std::atomic<float> lpAlpha_{0.0f};
+
+    // Low-pass IIR state, audio thread only.
+    float lpPrevL_ = 0.0f;
+    float lpPrevR_ = 0.0f;
 };

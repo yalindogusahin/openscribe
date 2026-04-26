@@ -2,6 +2,9 @@
 #import <Foundation/Foundation.h>
 #import <CoreAudio/CoreAudio.h>
 
+#include <algorithm>
+#include <cmath>
+
 namespace {
 constexpr UInt32 kChannels = 2;
 constexpr UInt32 kBitsPerChannel = 32;
@@ -118,6 +121,9 @@ std::vector<AudioEngine::DeviceInfo> AudioEngine::listOutputDevices() {
 
 AudioEngine::AudioEngine() {
     setupOutputUnit();
+    // Pre-compute the IIR alpha for the default cutoff so toggling LP on
+    // immediately gives a sensible filter rather than a no-op.
+    setLowPassFrequencyHz(lpFreqHz_.load());
 }
 
 AudioEngine::~AudioEngine() {
@@ -270,6 +276,8 @@ bool AudioEngine::load(const std::string& path) {
     readFrame_.store(0);
     loopStart_.store(-1);
     loopEnd_.store(-1);
+    lpPrevL_ = 0.0f;
+    lpPrevR_ = 0.0f;
     return true;
 }
 
@@ -372,6 +380,24 @@ void AudioEngine::setVolume(double v) {
     volume_.store((float)v);
 }
 
+void AudioEngine::setCenterCancelAmount(double amount) {
+    amount = std::clamp(amount, 0.0, 1.0);
+    centerCancel_.store((float)amount);
+}
+
+void AudioEngine::setLowPassEnabled(bool enabled) {
+    lpEnabled_.store(enabled);
+}
+
+void AudioEngine::setLowPassFrequencyHz(double hz) {
+    hz = std::clamp(hz, 60.0, 18000.0);
+    lpFreqHz_.store((float)hz);
+    double rc = 1.0 / (2.0 * M_PI * hz);
+    double dt = 1.0 / sampleRate_;
+    double alpha = dt / (rc + dt);
+    lpAlpha_.store((float)alpha);
+}
+
 void AudioEngine::setPitch(double cents) {
     if (cents < -2400.0) cents = -2400.0;
     if (cents > 2400.0) cents = 2400.0;
@@ -413,6 +439,11 @@ void AudioEngine::render(uint32_t numFrames, AudioBufferList* ioData) {
     const bool looping = (lStart >= 0 && lEnd > lStart);
     int64_t pos = readFrame_.load();
     const float vol = volume_.load();
+    const float cancel = centerCancel_.load();
+    const bool lpOn = lpEnabled_.load();
+    const float alpha = lpAlpha_.load();
+    float pL = lpPrevL_;
+    float pR = lpPrevR_;
 
     int64_t wraps = 0;
     for (uint32_t i = 0; i < numFrames; ++i) {
@@ -425,11 +456,26 @@ void AudioEngine::render(uint32_t numFrames, AudioBufferList* ioData) {
             R[i] = 0.0f;
             continue;
         }
-        L[i] = samples_[pos * 2 + 0] * vol;
-        R[i] = samples_[pos * 2 + 1] * vol;
+        float l = samples_[pos * 2 + 0];
+        float r = samples_[pos * 2 + 1];
+        if (cancel > 0.0f) {
+            float mid = 0.5f * (l + r);
+            l -= cancel * mid;
+            r -= cancel * mid;
+        }
+        if (lpOn) {
+            pL += alpha * (l - pL);
+            pR += alpha * (r - pR);
+            l = pL;
+            r = pR;
+        }
+        L[i] = l * vol;
+        R[i] = r * vol;
         ++pos;
     }
 
+    lpPrevL_ = pL;
+    lpPrevR_ = pR;
     readFrame_.store(pos);
     if (wraps > 0) {
         loopWrapCount_.fetch_add(wraps);

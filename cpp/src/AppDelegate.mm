@@ -29,6 +29,12 @@ struct Bookmark {
     double time = 0.0;
     NSString* label = @"";
 };
+
+struct IsolateState {
+    double centerCancel = 0.0;        // 0..1, vocal-cancel amount
+    bool   bassFocusEnabled = false;
+    double bassFocusCutoffHz = 250.0; // 60..2000
+};
 }
 
 @interface AppDelegate () {
@@ -38,6 +44,7 @@ struct Bookmark {
     std::vector<Bookmark> _bookmarks;
     NSTimeInterval _lastBookmarkToggleTime;
     SmartLoopState _smartLoop;
+    IsolateState _isolate;
 }
 @property (nonatomic, strong) MainWindow* mainWindow;
 @property (nonatomic, strong) NSTimer* timeTimer;
@@ -56,6 +63,14 @@ struct Bookmark {
 @property (nonatomic, strong) NSTextField* smartLoopStepLabel;
 @property (nonatomic, strong) NSTextField* smartLoopRepeatsLabel;
 @property (nonatomic, strong) NSTextField* smartLoopStatusLabel;
+
+// Isolate popover controls.
+@property (nonatomic, strong) NSPopover* isolatePopover;
+@property (nonatomic, strong) NSSlider* vocalCancelSlider;
+@property (nonatomic, strong) NSTextField* vocalCancelLabel;
+@property (nonatomic, strong) NSButton* bassFocusToggle;
+@property (nonatomic, strong) NSSlider* bassFocusSlider;
+@property (nonatomic, strong) NSTextField* bassFocusLabel;
 @end
 
 @implementation AppDelegate
@@ -94,6 +109,9 @@ struct Bookmark {
 
     self.mainWindow.smartLoopButton.target = self;
     self.mainWindow.smartLoopButton.action = @selector(showSmartLoopPopover:);
+
+    self.mainWindow.isolateButton.target = self;
+    self.mainWindow.isolateButton.action = @selector(showIsolatePopover:);
 
     self.mainWindow.startButton.target = self;
     self.mainWindow.startButton.action = @selector(seekToStartClicked:);
@@ -718,6 +736,196 @@ struct Bookmark {
     self.mainWindow.smartLoopButton.contentTintColor = color;
 }
 
+// MARK: – Isolate popover (vocal cancel + bass focus)
+
+- (BOOL)isolateActive {
+    return _isolate.centerCancel > 0.001 || _isolate.bassFocusEnabled;
+}
+
+- (void)updateIsolateButtonTint {
+    NSColor* color = [self isolateActive]
+        ? [NSColor colorWithRed:0.96 green:0.62 blue:0.30 alpha:1.0]
+        : [NSColor colorWithWhite:0.65 alpha:1.0];
+    self.mainWindow.isolateButton.contentTintColor = color;
+}
+
+- (void)applyIsolateToEngine {
+    if (!_engine) return;
+    _engine->setCenterCancelAmount(_isolate.centerCancel);
+    _engine->setLowPassEnabled(_isolate.bassFocusEnabled);
+    _engine->setLowPassFrequencyHz(_isolate.bassFocusCutoffHz);
+    [self updateIsolateButtonTint];
+}
+
+- (void)showIsolatePopover:(id)sender {
+    if (!self.isolatePopover) {
+        [self buildIsolatePopover];
+    }
+    [self syncIsolateControls];
+    NSView* anchor = (NSView*)sender;
+    [self.isolatePopover showRelativeToRect:anchor.bounds
+                                     ofView:anchor
+                              preferredEdge:NSMinYEdge];
+}
+
+- (void)buildIsolatePopover {
+    CGFloat w = 340;
+    CGFloat rowH = 24;
+    CGFloat margin = 16;
+    CGFloat labelW = 110;
+    CGFloat valueW = 56;
+    CGFloat sliderW = w - margin - labelW - 8 - valueW - margin;
+    __block CGFloat y = margin;
+
+    NSView* container = [[OSFlippedView alloc] initWithFrame:NSMakeRect(0, 0, w, 1)];
+    container.wantsLayer = YES;
+
+    NSTextField* title = [[NSTextField alloc]
+        initWithFrame:NSMakeRect(margin, y, w - 2 * margin, 22)];
+    title.bezeled = NO; title.editable = NO; title.selectable = NO;
+    title.drawsBackground = NO;
+    title.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
+    title.textColor = [NSColor labelColor];
+    title.stringValue = @"Isolate";
+    [container addSubview:title];
+    y += 26;
+
+    NSTextField* sub = [[NSTextField alloc]
+        initWithFrame:NSMakeRect(margin, y, w - 2 * margin, 16)];
+    sub.bezeled = NO; sub.editable = NO; sub.selectable = NO;
+    sub.drawsBackground = NO;
+    sub.font = [NSFont systemFontOfSize:11];
+    sub.textColor = [NSColor secondaryLabelColor];
+    sub.stringValue = @"Drop vocals or focus on the bass line.";
+    [container addSubview:sub];
+    y += 22;
+
+    // -- Vocal cancel row.
+    NSTextField* vcLbl = [[NSTextField alloc]
+        initWithFrame:NSMakeRect(margin, y, labelW, rowH)];
+    vcLbl.bezeled = NO; vcLbl.editable = NO; vcLbl.selectable = NO;
+    vcLbl.drawsBackground = NO;
+    vcLbl.font = [NSFont systemFontOfSize:11];
+    vcLbl.textColor = [NSColor labelColor];
+    vcLbl.stringValue = @"Vocal cancel";
+    [container addSubview:vcLbl];
+
+    self.vocalCancelSlider = [[NSSlider alloc] initWithFrame:
+        NSMakeRect(margin + labelW, y + 1, sliderW, rowH - 2)];
+    self.vocalCancelSlider.minValue = 0.0;
+    self.vocalCancelSlider.maxValue = 1.0;
+    self.vocalCancelSlider.continuous = YES;
+    self.vocalCancelSlider.target = self;
+    self.vocalCancelSlider.action = @selector(vocalCancelChanged:);
+    [container addSubview:self.vocalCancelSlider];
+
+    self.vocalCancelLabel = [[NSTextField alloc] initWithFrame:
+        NSMakeRect(margin + labelW + sliderW + 8, y, valueW, rowH)];
+    self.vocalCancelLabel.bezeled = NO;
+    self.vocalCancelLabel.editable = NO;
+    self.vocalCancelLabel.selectable = NO;
+    self.vocalCancelLabel.drawsBackground = NO;
+    self.vocalCancelLabel.font =
+        [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightMedium];
+    self.vocalCancelLabel.alignment = NSTextAlignmentRight;
+    self.vocalCancelLabel.textColor = [NSColor secondaryLabelColor];
+    [container addSubview:self.vocalCancelLabel];
+
+    y += rowH + 8;
+
+    NSView* sep = [[NSView alloc] initWithFrame:NSMakeRect(margin, y, w - 2 * margin, 1)];
+    sep.wantsLayer = YES;
+    sep.layer.backgroundColor = [NSColor colorWithWhite:0.0 alpha:0.12].CGColor;
+    [container addSubview:sep];
+    y += 9;
+
+    // -- Bass focus row.
+    self.bassFocusToggle = [[NSButton alloc] initWithFrame:
+        NSMakeRect(margin, y, labelW + 40, rowH)];
+    [self.bassFocusToggle setButtonType:NSButtonTypeSwitch];
+    self.bassFocusToggle.title = @"Bass focus";
+    self.bassFocusToggle.font = [NSFont systemFontOfSize:11];
+    self.bassFocusToggle.target = self;
+    self.bassFocusToggle.action = @selector(bassFocusToggled:);
+    [container addSubview:self.bassFocusToggle];
+
+    self.bassFocusSlider = [[NSSlider alloc] initWithFrame:
+        NSMakeRect(margin + labelW, y + 1, sliderW, rowH - 2)];
+    // Log scale: slider 0..1 maps to 60..2000 Hz.
+    self.bassFocusSlider.minValue = 0.0;
+    self.bassFocusSlider.maxValue = 1.0;
+    self.bassFocusSlider.continuous = YES;
+    self.bassFocusSlider.target = self;
+    self.bassFocusSlider.action = @selector(bassFocusCutoffChanged:);
+    [container addSubview:self.bassFocusSlider];
+
+    self.bassFocusLabel = [[NSTextField alloc] initWithFrame:
+        NSMakeRect(margin + labelW + sliderW + 8, y, valueW, rowH)];
+    self.bassFocusLabel.bezeled = NO;
+    self.bassFocusLabel.editable = NO;
+    self.bassFocusLabel.selectable = NO;
+    self.bassFocusLabel.drawsBackground = NO;
+    self.bassFocusLabel.font =
+        [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightMedium];
+    self.bassFocusLabel.alignment = NSTextAlignmentRight;
+    self.bassFocusLabel.textColor = [NSColor secondaryLabelColor];
+    [container addSubview:self.bassFocusLabel];
+
+    y += rowH + 12;
+    container.frame = NSMakeRect(0, 0, w, y);
+
+    NSViewController* vc = [[NSViewController alloc] init];
+    vc.view = container;
+
+    self.isolatePopover = [[NSPopover alloc] init];
+    self.isolatePopover.contentViewController = vc;
+    self.isolatePopover.behavior = NSPopoverBehaviorTransient;
+    self.isolatePopover.contentSize = NSMakeSize(w, y);
+}
+
+static double sliderToHz(double s) {
+    // 60..2000 Hz, log
+    double lo = std::log(60.0), hi = std::log(2000.0);
+    return std::exp(lo + (hi - lo) * std::clamp(s, 0.0, 1.0));
+}
+static double hzToSlider(double hz) {
+    double lo = std::log(60.0), hi = std::log(2000.0);
+    return (std::log(std::clamp(hz, 60.0, 2000.0)) - lo) / (hi - lo);
+}
+
+- (void)syncIsolateControls {
+    self.vocalCancelSlider.doubleValue = _isolate.centerCancel;
+    self.vocalCancelLabel.stringValue =
+        [NSString stringWithFormat:@"%d%%", (int)std::round(_isolate.centerCancel * 100.0)];
+    self.bassFocusToggle.state =
+        _isolate.bassFocusEnabled ? NSControlStateValueOn : NSControlStateValueOff;
+    self.bassFocusSlider.doubleValue = hzToSlider(_isolate.bassFocusCutoffHz);
+    self.bassFocusSlider.enabled = _isolate.bassFocusEnabled;
+    self.bassFocusLabel.stringValue =
+        [NSString stringWithFormat:@"%d Hz", (int)std::round(_isolate.bassFocusCutoffHz)];
+}
+
+- (void)vocalCancelChanged:(NSSlider*)sender {
+    _isolate.centerCancel = std::clamp(sender.doubleValue, 0.0, 1.0);
+    [self syncIsolateControls];
+    [self applyIsolateToEngine];
+    if (self.currentFilePath) [self saveStateForPath:self.currentFilePath];
+}
+
+- (void)bassFocusToggled:(NSButton*)sender {
+    _isolate.bassFocusEnabled = (sender.state == NSControlStateValueOn);
+    [self syncIsolateControls];
+    [self applyIsolateToEngine];
+    if (self.currentFilePath) [self saveStateForPath:self.currentFilePath];
+}
+
+- (void)bassFocusCutoffChanged:(NSSlider*)sender {
+    _isolate.bassFocusCutoffHz = sliderToHz(sender.doubleValue);
+    [self syncIsolateControls];
+    [self applyIsolateToEngine];
+    if (self.currentFilePath) [self saveStateForPath:self.currentFilePath];
+}
+
 - (void)installKeyMonitor {
     __weak AppDelegate* weakSelf = self;
     _keyMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
@@ -1011,6 +1219,9 @@ struct Bookmark {
     d[@"smartLoopEndSpeed"]   = @(_smartLoop.endSpeed);
     d[@"smartLoopStepSize"]   = @(_smartLoop.stepSize);
     d[@"smartLoopRepeats"]    = @(_smartLoop.repeatsPerStep);
+    d[@"vocalCancel"]         = @(_isolate.centerCancel);
+    d[@"bassFocusEnabled"]    = @(_isolate.bassFocusEnabled);
+    d[@"bassFocusCutoffHz"]   = @(_isolate.bassFocusCutoffHz);
     [[NSUserDefaults standardUserDefaults] setObject:d
                                               forKey:[self stateKeyForPath:path]];
 }
@@ -1092,6 +1303,15 @@ struct Bookmark {
     [self resetSmartLoopBaseline];
     [self updateSmartLoopButtonTint];
     if (self.smartLoopPopover) [self syncSmartLoopControls];
+
+    NSNumber* vc      = d[@"vocalCancel"];
+    NSNumber* bfOn    = d[@"bassFocusEnabled"];
+    NSNumber* bfHz    = d[@"bassFocusCutoffHz"];
+    if (vc)   _isolate.centerCancel      = std::clamp(vc.doubleValue, 0.0, 1.0);
+    if (bfOn) _isolate.bassFocusEnabled  = bfOn.boolValue;
+    if (bfHz) _isolate.bassFocusCutoffHz = std::clamp(bfHz.doubleValue, 60.0, 2000.0);
+    [self applyIsolateToEngine];
+    if (self.isolatePopover) [self syncIsolateControls];
 }
 
 - (void)speedChanged:(NSSlider*)sender {
@@ -1143,6 +1363,8 @@ struct Bookmark {
         _engine->clearLoop();
         _smartLoop = SmartLoopState{};
         [self updateSmartLoopButtonTint];
+        _isolate = IsolateState{};
+        [self applyIsolateToEngine];
         [self.mainWindow setTitle:
             [NSString stringWithFormat:@"OpenScribe Native — %@", path.lastPathComponent]];
         [self.mainWindow.waveformView reloadFromEngine];
