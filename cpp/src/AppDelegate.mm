@@ -24,13 +24,18 @@ struct SmartLoopState {
     int64_t lastSeenWrapCount = 0;
     int currentStepIterations = 0;
 };
+
+struct Bookmark {
+    double time = 0.0;
+    NSString* label = @"";
+};
 }
 
 @interface AppDelegate () {
     std::unique_ptr<AudioEngine> _engine;
     id _keyMonitor;
     BOOL _torndown;
-    std::vector<double> _bookmarks;
+    std::vector<Bookmark> _bookmarks;
     NSTimeInterval _lastBookmarkToggleTime;
     SmartLoopState _smartLoop;
 }
@@ -102,6 +107,15 @@ struct SmartLoopState {
     __weak AppDelegate* weakSelfDrop = self;
     self.mainWindow.waveformView.fileDropHandler = ^(NSString* path) {
         [weakSelfDrop loadPath:path];
+    };
+    self.mainWindow.waveformView.bookmarkJumpHandler = ^(NSInteger i) {
+        [weakSelfDrop jumpToBookmark:i];
+    };
+    self.mainWindow.waveformView.bookmarkRenameHandler = ^(NSInteger i) {
+        [weakSelfDrop renameBookmarkAtIndex:i];
+    };
+    self.mainWindow.waveformView.bookmarkRemoveHandler = ^(NSInteger i) {
+        [weakSelfDrop removeBookmarkAtIndex:i];
     };
 
     [self installKeyMonitor];
@@ -378,6 +392,7 @@ struct SmartLoopState {
         @[@"[ / ]",         @"Set loop start / end"],
         @[@"Shift + [ / ]", @"Nudge loop edge"],
         @[@"B",             @"Toggle bookmark"],
+        @[@"R",             @"Rename nearest bookmark"],
         @[@"1 \u2013 9",    @"Jump to bookmark"],
         @[@"\u2318 O",      @"Open file"],
         @[@"Drag",          @"Create loop"],
@@ -738,6 +753,7 @@ struct SmartLoopState {
                           else      [s setLoopEndHere];
                           return nil;
                 case 11:  [s toggleBookmark]; return nil;              // B
+                case 15:  [s renameNearestBookmark]; return nil;       // R
                 case 18:  [s jumpToBookmark:0]; return nil;            // 1
                 case 19:  [s jumpToBookmark:1]; return nil;            // 2
                 case 20:  [s jumpToBookmark:2]; return nil;            // 3
@@ -887,26 +903,77 @@ struct SmartLoopState {
     double t = _engine->currentTime();
     constexpr double kProx = 0.30;
     for (auto it = _bookmarks.begin(); it != _bookmarks.end(); ++it) {
-        if (std::abs(*it - t) <= kProx) {
+        if (std::abs(it->time - t) <= kProx) {
             _bookmarks.erase(it);
             [self pushBookmarksToView];
             return;
         }
     }
-    _bookmarks.push_back(t);
-    std::sort(_bookmarks.begin(), _bookmarks.end());
+    _bookmarks.push_back({t, @""});
+    std::sort(_bookmarks.begin(), _bookmarks.end(),
+              [](const Bookmark& a, const Bookmark& b) { return a.time < b.time; });
     [self pushBookmarksToView];
 }
 
 - (void)jumpToBookmark:(NSInteger)index {
     if (!_engine) return;
     if (index < 0 || (size_t)index >= _bookmarks.size()) return;
-    _engine->seek(_bookmarks[index]);
+    _engine->seek(_bookmarks[index].time);
+}
+
+- (NSInteger)nearestBookmarkIndex {
+    if (!_engine || _bookmarks.empty()) return -1;
+    double t = _engine->currentTime();
+    NSInteger best = -1;
+    double bestDist = INFINITY;
+    for (size_t i = 0; i < _bookmarks.size(); ++i) {
+        double d = std::abs(_bookmarks[i].time - t);
+        if (d < bestDist) { bestDist = d; best = (NSInteger)i; }
+    }
+    return best;
+}
+
+- (void)renameBookmarkAtIndex:(NSInteger)index {
+    if (index < 0 || (size_t)index >= _bookmarks.size()) return;
+    NSAlert* alert = [[NSAlert alloc] init];
+    alert.messageText = [NSString stringWithFormat:@"Bookmark %ld", (long)(index + 1)];
+    alert.informativeText = @"Label this section (e.g., Head, Solo 1, Bridge).";
+    [alert addButtonWithTitle:@"Save"];
+    [alert addButtonWithTitle:@"Cancel"];
+
+    NSTextField* input = [[NSTextField alloc]
+        initWithFrame:NSMakeRect(0, 0, 240, 24)];
+    input.stringValue = _bookmarks[index].label ?: @"";
+    input.placeholderString = @"e.g. Head, Solo 1, Bridge";
+    alert.accessoryView = input;
+    [alert.window setInitialFirstResponder:input];
+
+    NSModalResponse resp = [alert runModal];
+    if (resp == NSAlertFirstButtonReturn) {
+        _bookmarks[index].label = [input.stringValue copy] ?: @"";
+        [self pushBookmarksToView];
+        if (self.currentFilePath) [self saveStateForPath:self.currentFilePath];
+    }
+}
+
+- (void)removeBookmarkAtIndex:(NSInteger)index {
+    if (index < 0 || (size_t)index >= _bookmarks.size()) return;
+    _bookmarks.erase(_bookmarks.begin() + index);
+    [self pushBookmarksToView];
+    if (self.currentFilePath) [self saveStateForPath:self.currentFilePath];
+}
+
+- (void)renameNearestBookmark {
+    NSInteger i = [self nearestBookmarkIndex];
+    if (i < 0) return;
+    [self renameBookmarkAtIndex:i];
 }
 
 - (void)pushBookmarksToView {
-    NSMutableArray<NSNumber*>* arr = [NSMutableArray arrayWithCapacity:_bookmarks.size()];
-    for (double t : _bookmarks) [arr addObject:@(t)];
+    NSMutableArray<NSDictionary*>* arr = [NSMutableArray arrayWithCapacity:_bookmarks.size()];
+    for (const Bookmark& b : _bookmarks) {
+        [arr addObject:@{ @"time": @(b.time), @"label": (b.label ?: @"") }];
+    }
     self.mainWindow.waveformView.bookmarks = arr;
 }
 
@@ -922,8 +989,10 @@ struct SmartLoopState {
 - (void)saveStateForPath:(NSString*)path {
     if (!path.length || !_engine || _engine->duration() <= 0.0) return;
     double sr = _engine->sampleRate();
-    NSMutableArray<NSNumber*>* bm = [NSMutableArray arrayWithCapacity:_bookmarks.size()];
-    for (double t : _bookmarks) [bm addObject:@(t)];
+    NSMutableArray<NSDictionary*>* bm = [NSMutableArray arrayWithCapacity:_bookmarks.size()];
+    for (const Bookmark& b : _bookmarks) {
+        [bm addObject:@{ @"time": @(b.time), @"label": (b.label ?: @"") }];
+    }
 
     NSMutableDictionary* d = [NSMutableDictionary dictionary];
     d[@"viewStart"] = @(self.mainWindow.waveformView.viewStart);
@@ -983,10 +1052,21 @@ struct SmartLoopState {
     NSArray* bm = d[@"bookmarks"];
     if ([bm isKindOfClass:[NSArray class]]) {
         _bookmarks.clear();
-        for (NSNumber* n in bm) {
-            if ([n isKindOfClass:[NSNumber class]]) _bookmarks.push_back(n.doubleValue);
+        for (id entry in bm) {
+            if ([entry isKindOfClass:[NSDictionary class]]) {
+                NSNumber* nT = ((NSDictionary*)entry)[@"time"];
+                NSString* lbl = ((NSDictionary*)entry)[@"label"];
+                if ([nT isKindOfClass:[NSNumber class]]) {
+                    _bookmarks.push_back({nT.doubleValue,
+                                          [lbl isKindOfClass:[NSString class]] ? [lbl copy] : @""});
+                }
+            } else if ([entry isKindOfClass:[NSNumber class]]) {
+                // Backwards-compat with the pre-label format.
+                _bookmarks.push_back({((NSNumber*)entry).doubleValue, @""});
+            }
         }
-        std::sort(_bookmarks.begin(), _bookmarks.end());
+        std::sort(_bookmarks.begin(), _bookmarks.end(),
+                  [](const Bookmark& a, const Bookmark& b) { return a.time < b.time; });
         [self pushBookmarksToView];
     }
     NSNumber* ls = d[@"loopStart"];

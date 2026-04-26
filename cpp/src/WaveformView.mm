@@ -18,26 +18,108 @@ constexpr int kPeakBins = 131072;
 }
 
 @interface BookmarkLabelsView : NSView
-@property (nonatomic, copy) NSArray<NSNumber*>* bookmarks;
+@property (nonatomic, copy) NSArray<NSDictionary*>* bookmarks;
 @property (nonatomic) double viewStart;
 @property (nonatomic) double viewEnd;
 @property (nonatomic) double duration;
+@property (nonatomic, copy) void (^jumpHandler)(NSInteger index);
+@property (nonatomic, copy) void (^renameHandler)(NSInteger index);
+@property (nonatomic, copy) void (^removeHandler)(NSInteger index);
+- (NSInteger)bookmarkIndexAtLocalX:(CGFloat)x;
 @end
 
 @implementation BookmarkLabelsView
-- (NSView*)hitTest:(NSPoint)point { return nil; }
 - (BOOL)isFlipped { return NO; }
+
+- (NSInteger)bookmarkIndexAtLocalX:(CGFloat)x {
+    if (_duration <= 0.0 || _bookmarks.count == 0) return -1;
+    double span = std::max(1e-9, _viewEnd - _viewStart);
+    constexpr CGFloat bw = 18.0;
+    NSInteger best = -1;
+    CGFloat bestDist = bw / 2.0 + 6.0;
+    for (NSUInteger i = 0; i < _bookmarks.count; ++i) {
+        NSDictionary* d = _bookmarks[i];
+        if (![d isKindOfClass:[NSDictionary class]]) continue;
+        double t = [d[@"time"] doubleValue];
+        double tFrac = t / _duration;
+        double tView = (tFrac - _viewStart) / span;
+        if (tView < 0.0 || tView > 1.0) continue;
+        CGFloat bx = (CGFloat)(tView * self.bounds.size.width);
+        CGFloat dist = std::abs((double)(x - bx));
+        if (dist <= bestDist) { bestDist = dist; best = (NSInteger)i; }
+    }
+    return best;
+}
+
+- (NSView*)hitTest:(NSPoint)point {
+    NSPoint local = [self convertPoint:point fromView:self.superview];
+    return [self bookmarkIndexAtLocalX:local.x] >= 0 ? self : nil;
+}
+
+- (void)mouseDown:(NSEvent*)event {
+    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    NSInteger idx = [self bookmarkIndexAtLocalX:p.x];
+    if (idx >= 0 && self.jumpHandler) self.jumpHandler(idx);
+}
+
+- (NSMenu*)menuForEvent:(NSEvent*)event {
+    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    NSInteger idx = [self bookmarkIndexAtLocalX:p.x];
+    if (idx < 0) return nil;
+    NSMenu* m = [[NSMenu alloc] init];
+    NSDictionary* b = _bookmarks[idx];
+    NSString* lbl = [b[@"label"] isKindOfClass:[NSString class]] ? b[@"label"] : @"";
+    NSString* title = lbl.length
+        ? [NSString stringWithFormat:@"Bookmark %ld — %@", (long)(idx + 1), lbl]
+        : [NSString stringWithFormat:@"Bookmark %ld", (long)(idx + 1)];
+    NSMenuItem* hdr = [[NSMenuItem alloc] initWithTitle:title action:nil keyEquivalent:@""];
+    hdr.enabled = NO;
+    [m addItem:hdr];
+    [m addItem:[NSMenuItem separatorItem]];
+    NSMenuItem* rn = [[NSMenuItem alloc] initWithTitle:@"Rename\u2026"
+                                                action:@selector(_renameClicked:)
+                                         keyEquivalent:@""];
+    rn.target = self;
+    rn.tag = idx;
+    [m addItem:rn];
+    NSMenuItem* rm = [[NSMenuItem alloc] initWithTitle:@"Remove"
+                                                action:@selector(_removeClicked:)
+                                         keyEquivalent:@""];
+    rm.target = self;
+    rm.tag = idx;
+    [m addItem:rm];
+    return m;
+}
+
+- (void)_renameClicked:(NSMenuItem*)sender {
+    if (self.renameHandler) self.renameHandler(sender.tag);
+}
+- (void)_removeClicked:(NSMenuItem*)sender {
+    if (self.removeHandler) self.removeHandler(sender.tag);
+}
+
 - (void)drawRect:(NSRect)dirty {
     if (_duration <= 0.0 || _bookmarks.count == 0) return;
     double span = std::max(1e-9, _viewEnd - _viewStart);
-    NSDictionary* attrs = @{
+    NSDictionary* numAttrs = @{
         NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:9 weight:NSFontWeightBold],
         NSForegroundColorAttributeName: [NSColor blackColor],
     };
+    NSDictionary* labelAttrs = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold],
+        NSForegroundColorAttributeName: [NSColor colorWithWhite:0.95 alpha:1.0],
+    };
+    NSDictionary* labelShadow = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold],
+        NSForegroundColorAttributeName: [NSColor colorWithWhite:0.0 alpha:0.55],
+    };
     CGFloat bw = 18, bh = 14;
     NSColor* badgeFill = [NSColor colorWithRed:1.0 green:0.92 blue:0.30 alpha:0.95];
-    [_bookmarks enumerateObjectsUsingBlock:^(NSNumber* n, NSUInteger idx, BOOL* stop) {
-        double tFrac = n.doubleValue / self.duration;
+    [_bookmarks enumerateObjectsUsingBlock:^(NSDictionary* d, NSUInteger idx, BOOL* stop) {
+        if (![d isKindOfClass:[NSDictionary class]]) return;
+        double t = [d[@"time"] doubleValue];
+        NSString* lbl = [d[@"label"] isKindOfClass:[NSString class]] ? d[@"label"] : @"";
+        double tFrac = t / self.duration;
         double tView = (tFrac - self.viewStart) / span;
         if (tView < 0.0 || tView > 1.0) return;
         CGFloat x = (CGFloat)(tView * self.bounds.size.width);
@@ -46,10 +128,18 @@ constexpr int kPeakBins = 131072;
         [badgeFill setFill];
         [bp fill];
         NSString* s = [NSString stringWithFormat:@"%lu", (unsigned long)(idx + 1)];
-        NSSize sz = [s sizeWithAttributes:attrs];
+        NSSize sz = [s sizeWithAttributes:numAttrs];
         [s drawAtPoint:NSMakePoint(r.origin.x + (bw - sz.width)/2,
                                    r.origin.y + (bh - sz.height)/2 + 0.5)
-        withAttributes:attrs];
+        withAttributes:numAttrs];
+        if (lbl.length > 0) {
+            NSPoint origin = NSMakePoint(r.origin.x + bw + 4,
+                                         r.origin.y + (bh - 12) / 2.0);
+            // 1px shadow for readability over the bright waveform.
+            [lbl drawAtPoint:NSMakePoint(origin.x + 0.5, origin.y - 0.5)
+              withAttributes:labelShadow];
+            [lbl drawAtPoint:origin withAttributes:labelAttrs];
+        }
     }];
 }
 @end
@@ -91,7 +181,7 @@ typedef NS_ENUM(NSInteger, DragMode) {
     double _viewEnd;
     TimelineRulerView* _ruler;
     NSTrackingArea* _trackingArea;
-    NSArray<NSNumber*>* _bookmarks;
+    NSArray<NSDictionary*>* _bookmarks;
     BookmarkLabelsView* _bookmarkLabels;
     NSTextField* _zoomLabel;
 }
@@ -198,13 +288,26 @@ typedef NS_ENUM(NSInteger, DragMode) {
     }
 }
 
-- (void)setBookmarks:(NSArray<NSNumber*>*)bookmarks {
+- (void)setBookmarks:(NSArray<NSDictionary*>*)bookmarks {
     _bookmarks = [bookmarks copy];
     _bookmarkLabels.bookmarks = _bookmarks;
     [_bookmarkLabels setNeedsDisplay:YES];
 }
 
-- (NSArray<NSNumber*>*)bookmarks { return _bookmarks; }
+- (NSArray<NSDictionary*>*)bookmarks { return _bookmarks; }
+
+- (void)setBookmarkJumpHandler:(void (^)(NSInteger))h {
+    _bookmarkJumpHandler = [h copy];
+    _bookmarkLabels.jumpHandler = _bookmarkJumpHandler;
+}
+- (void)setBookmarkRenameHandler:(void (^)(NSInteger))h {
+    _bookmarkRenameHandler = [h copy];
+    _bookmarkLabels.renameHandler = _bookmarkRenameHandler;
+}
+- (void)setBookmarkRemoveHandler:(void (^)(NSInteger))h {
+    _bookmarkRemoveHandler = [h copy];
+    _bookmarkLabels.removeHandler = _bookmarkRemoveHandler;
+}
 
 - (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
     return self.fileDropHandler ? NSDragOperationCopy : NSDragOperationNone;
@@ -385,8 +488,9 @@ typedef NS_ENUM(NSInteger, DragMode) {
     if (durForBM > 0.0 && _bookmarks.count > 0) {
         float bw = 2.0f / std::max<float>(1.0f, (float)self.drawableSize.width);
         simd_float4 bcol = {1.0f, 0.92f, 0.30f, 0.85f};
-        for (NSNumber* n in _bookmarks) {
-            double t = n.doubleValue;
+        for (NSDictionary* d in _bookmarks) {
+            if (![d isKindOfClass:[NSDictionary class]]) continue;
+            double t = [d[@"time"] doubleValue];
             double tFrac = t / durForBM;
             double tView = (tFrac - _viewStart) / span;
             if (tView < 0.0 || tView > 1.0) continue;
