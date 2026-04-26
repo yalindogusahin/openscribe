@@ -93,6 +93,68 @@ AudioDeviceID DeviceIDForUID(const std::string& uid) {
     }
     return kAudioObjectUnknown;
 }
+
+// Decode a single audio file into an interleaved stereo float32 buffer at
+// the given sample rate. On success, fills `out` and sets `framesOut` to
+// the actual number of frames read. Returns false if the file can't be
+// opened or read.
+bool DecodeFileToStereoFloat(const std::string& path,
+                             double sampleRate,
+                             std::vector<float>& out,
+                             int64_t& framesOut) {
+    NSString* nsPath = [NSString stringWithUTF8String:path.c_str()];
+    NSURL* url = [NSURL fileURLWithPath:nsPath];
+
+    ExtAudioFileRef file = nullptr;
+    if (ExtAudioFileOpenURL((__bridge CFURLRef)url, &file) != noErr) return false;
+
+    AudioStreamBasicDescription clientFmt = {};
+    clientFmt.mSampleRate = sampleRate;
+    clientFmt.mFormatID = kAudioFormatLinearPCM;
+    clientFmt.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked;
+    clientFmt.mFramesPerPacket = 1;
+    clientFmt.mChannelsPerFrame = kChannels;
+    clientFmt.mBitsPerChannel = kBitsPerChannel;
+    clientFmt.mBytesPerFrame = (kBitsPerChannel / 8) * kChannels;
+    clientFmt.mBytesPerPacket = clientFmt.mBytesPerFrame;
+
+    if (ExtAudioFileSetProperty(file,
+                                kExtAudioFileProperty_ClientDataFormat,
+                                sizeof(clientFmt), &clientFmt) != noErr) {
+        ExtAudioFileDispose(file);
+        return false;
+    }
+
+    SInt64 totalFrames = 0;
+    UInt32 propSize = sizeof(totalFrames);
+    if (ExtAudioFileGetProperty(file,
+                                kExtAudioFileProperty_FileLengthFrames,
+                                &propSize, &totalFrames) != noErr) {
+        ExtAudioFileDispose(file);
+        return false;
+    }
+
+    out.assign(static_cast<size_t>(totalFrames) * kChannels, 0.0f);
+
+    AudioBufferList bufList = {};
+    bufList.mNumberBuffers = 1;
+    bufList.mBuffers[0].mNumberChannels = kChannels;
+    bufList.mBuffers[0].mDataByteSize =
+        static_cast<UInt32>(out.size() * sizeof(float));
+    bufList.mBuffers[0].mData = out.data();
+
+    UInt32 frames = static_cast<UInt32>(totalFrames);
+    if (ExtAudioFileRead(file, &frames, &bufList) != noErr) {
+        ExtAudioFileDispose(file);
+        return false;
+    }
+
+    ExtAudioFileDispose(file);
+    framesOut = static_cast<int64_t>(frames);
+    // Trim if the file actually had fewer frames than reported.
+    out.resize(static_cast<size_t>(framesOut) * kChannels);
+    return true;
+}
 }
 
 std::vector<AudioEngine::DeviceInfo> AudioEngine::listOutputDevices() {
@@ -120,6 +182,13 @@ std::vector<AudioEngine::DeviceInfo> AudioEngine::listOutputDevices() {
 }
 
 AudioEngine::AudioEngine() {
+    // Initialize per-stem atomics. std::atomic isn't default-initialized
+    // by std::array's aggregate construction, so set them explicitly.
+    for (int i = 0; i < kMaxStems; ++i) {
+        stemGain_[i].store(1.0f);
+        stemMuted_[i].store(false);
+        stemSoloed_[i].store(false);
+    }
     setupOutputUnit();
     // Pre-compute the IIR alpha for the default cutoff so toggling LP on
     // immediately gives a sensible filter rather than a no-op.
@@ -218,61 +287,41 @@ void AudioEngine::teardownOutputUnit() {
     }
 }
 
+void AudioEngine::rebuildMixedWaveform() {
+    const size_t frames = static_cast<size_t>(totalFrames_);
+    mixedWaveform_.assign(frames * kChannels, 0.0f);
+    for (const auto& stem : stemSamples_) {
+        const size_t n = std::min(stem.size(), mixedWaveform_.size());
+        for (size_t i = 0; i < n; ++i) {
+            mixedWaveform_[i] += stem[i];
+        }
+    }
+}
+
 bool AudioEngine::load(const std::string& path) {
-    // Stop output before mutating samples_ — render callback reads it.
+    // Stop output before mutating buffers — render callback reads them.
     AudioOutputUnitStop(outputUnit_);
     playing_.store(false);
 
-    NSString* nsPath = [NSString stringWithUTF8String:path.c_str()];
-    NSURL* url = [NSURL fileURLWithPath:nsPath];
+    std::vector<float> buf;
+    int64_t frames = 0;
+    if (!DecodeFileToStereoFloat(path, sampleRate_, buf, frames)) return false;
 
-    ExtAudioFileRef file = nullptr;
-    if (ExtAudioFileOpenURL((__bridge CFURLRef)url, &file) != noErr) return false;
+    stemSamples_.clear();
+    stemSamples_.push_back(std::move(buf));
+    stemCount_ = 1;
+    totalFrames_ = frames;
 
-    AudioStreamBasicDescription clientFmt = {};
-    clientFmt.mSampleRate = sampleRate_;
-    clientFmt.mFormatID = kAudioFormatLinearPCM;
-    clientFmt.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked;
-    clientFmt.mFramesPerPacket = 1;
-    clientFmt.mChannelsPerFrame = kChannels;
-    clientFmt.mBitsPerChannel = kBitsPerChannel;
-    clientFmt.mBytesPerFrame = (kBitsPerChannel / 8) * kChannels;
-    clientFmt.mBytesPerPacket = clientFmt.mBytesPerFrame;
-
-    if (ExtAudioFileSetProperty(file,
-                                kExtAudioFileProperty_ClientDataFormat,
-                                sizeof(clientFmt), &clientFmt) != noErr) {
-        ExtAudioFileDispose(file);
-        return false;
+    // Reset per-stem state so the single-stem path always plays at unity.
+    for (int i = 0; i < kMaxStems; ++i) {
+        stemGain_[i].store(1.0f);
+        stemMuted_[i].store(false);
+        stemSoloed_[i].store(false);
     }
+    anySoloed_.store(0);
 
-    SInt64 totalFrames = 0;
-    UInt32 propSize = sizeof(totalFrames);
-    if (ExtAudioFileGetProperty(file,
-                                kExtAudioFileProperty_FileLengthFrames,
-                                &propSize, &totalFrames) != noErr) {
-        ExtAudioFileDispose(file);
-        return false;
-    }
+    rebuildMixedWaveform();
 
-    samples_.assign(static_cast<size_t>(totalFrames) * kChannels, 0.0f);
-
-    AudioBufferList bufList = {};
-    bufList.mNumberBuffers = 1;
-    bufList.mBuffers[0].mNumberChannels = kChannels;
-    bufList.mBuffers[0].mDataByteSize =
-        static_cast<UInt32>(samples_.size() * sizeof(float));
-    bufList.mBuffers[0].mData = samples_.data();
-
-    UInt32 frames = static_cast<UInt32>(totalFrames);
-    if (ExtAudioFileRead(file, &frames, &bufList) != noErr) {
-        ExtAudioFileDispose(file);
-        return false;
-    }
-
-    ExtAudioFileDispose(file);
-
-    totalFrames_ = static_cast<int64_t>(frames);
     readFrame_.store(0);
     loopStart_.store(-1);
     loopEnd_.store(-1);
@@ -281,8 +330,96 @@ bool AudioEngine::load(const std::string& path) {
     return true;
 }
 
+bool AudioEngine::loadStems(const std::vector<std::string>& paths) {
+    if (paths.size() != static_cast<size_t>(kMaxStems)) return false;
+
+    AudioOutputUnitStop(outputUnit_);
+    playing_.store(false);
+
+    std::vector<std::vector<float>> bufs(kMaxStems);
+    int64_t framesCommon = -1;
+    for (int i = 0; i < kMaxStems; ++i) {
+        int64_t f = 0;
+        if (!DecodeFileToStereoFloat(paths[i], sampleRate_, bufs[i], f)) {
+            return false;
+        }
+        if (framesCommon < 0) framesCommon = f;
+        else if (f != framesCommon) {
+            // Length mismatch — caller is expected to provide aligned stems.
+            return false;
+        }
+    }
+
+    stemSamples_ = std::move(bufs);
+    stemCount_ = kMaxStems;
+    totalFrames_ = framesCommon < 0 ? 0 : framesCommon;
+
+    for (int i = 0; i < kMaxStems; ++i) {
+        stemGain_[i].store(1.0f);
+        stemMuted_[i].store(false);
+        stemSoloed_[i].store(false);
+    }
+    anySoloed_.store(0);
+
+    rebuildMixedWaveform();
+
+    readFrame_.store(0);
+    loopStart_.store(-1);
+    loopEnd_.store(-1);
+    lpPrevL_ = 0.0f;
+    lpPrevR_ = 0.0f;
+    return true;
+}
+
+int AudioEngine::stemCount() const {
+    return stemCount_;
+}
+
+void AudioEngine::setStemGain(int index, double gain) {
+    if (index < 0 || index >= kMaxStems) return;
+    if (gain < 0.0) gain = 0.0;
+    if (gain > 1.5) gain = 1.5;
+    stemGain_[index].store((float)gain);
+}
+
+double AudioEngine::stemGain(int index) const {
+    if (index < 0 || index >= kMaxStems) return 0.0;
+    return stemGain_[index].load();
+}
+
+void AudioEngine::setStemMuted(int index, bool muted) {
+    if (index < 0 || index >= kMaxStems) return;
+    stemMuted_[index].store(muted);
+}
+
+bool AudioEngine::stemMuted(int index) const {
+    if (index < 0 || index >= kMaxStems) return false;
+    return stemMuted_[index].load();
+}
+
+void AudioEngine::setStemSoloed(int index, bool soloed) {
+    if (index < 0 || index >= kMaxStems) return;
+    bool was = stemSoloed_[index].exchange(soloed);
+    if (was == soloed) return;
+    if (soloed) anySoloed_.fetch_add(1);
+    else        anySoloed_.fetch_sub(1);
+}
+
+bool AudioEngine::stemSoloed(int index) const {
+    if (index < 0 || index >= kMaxStems) return false;
+    return stemSoloed_[index].load();
+}
+
+void AudioEngine::clearStemSolosAndMutes() {
+    for (int i = 0; i < kMaxStems; ++i) {
+        stemMuted_[i].store(false);
+        stemSoloed_[i].store(false);
+    }
+    anySoloed_.store(0);
+}
+
 void AudioEngine::play() {
-    if (samples_.empty()) return;
+    if (stemCount_ == 0 || totalFrames_ == 0) return;
     OSStatus s = AudioOutputUnitStart(outputUnit_);
     if (s == noErr) {
         playing_.store(true);
@@ -445,6 +582,27 @@ void AudioEngine::render(uint32_t numFrames, AudioBufferList* ioData) {
     float pL = lpPrevL_;
     float pR = lpPrevR_;
 
+    // Snapshot per-stem state once per render block. Mute/solo/gain are
+    // resolved into a single effective gain per stem so the inner loop
+    // is just a sum-of-products.
+    const int nStems = stemCount_;
+    const bool soloMode = anySoloed_.load() > 0;
+    float effGain[kMaxStems] = {0.0f, 0.0f, 0.0f, 0.0f};
+    const float* stemPtr[kMaxStems] = {nullptr, nullptr, nullptr, nullptr};
+    for (int i = 0; i < nStems; ++i) {
+        const float g = stemGain_[i].load();
+        const bool muted = stemMuted_[i].load();
+        const bool soloed = stemSoloed_[i].load();
+        // Solo wins over mute: a soloed stem is always audible. In solo
+        // mode, non-soloed stems are silent regardless of mute state.
+        // Outside solo mode, muted stems are silent.
+        bool audible;
+        if (soloMode) audible = soloed;
+        else          audible = !muted;
+        effGain[i] = audible ? g : 0.0f;
+        stemPtr[i] = stemSamples_[i].data();
+    }
+
     int64_t wraps = 0;
     for (uint32_t i = 0; i < numFrames; ++i) {
         if (looping && pos >= lEnd) {
@@ -456,8 +614,18 @@ void AudioEngine::render(uint32_t numFrames, AudioBufferList* ioData) {
             R[i] = 0.0f;
             continue;
         }
-        float l = samples_[pos * 2 + 0];
-        float r = samples_[pos * 2 + 1];
+
+        // Sum stems into l/r at their effective gains.
+        float l = 0.0f;
+        float r = 0.0f;
+        const size_t idx = static_cast<size_t>(pos) * 2;
+        for (int s = 0; s < nStems; ++s) {
+            const float g = effGain[s];
+            if (g == 0.0f) continue;
+            l += g * stemPtr[s][idx + 0];
+            r += g * stemPtr[s][idx + 1];
+        }
+
         if (cancel > 0.0f) {
             float mid = 0.5f * (l + r);
             l -= cancel * mid;
