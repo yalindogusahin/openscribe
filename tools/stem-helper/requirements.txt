@@ -1,0 +1,9 @@
+# OpenScribe stem-helper runtime deps. Pinned to versions known to work
+# together for 4-stem separation on Apple Silicon.
+demucs==4.0.1
+torch==2.11.0
+torchaudio==2.11.0
+numpy==2.4.4
+soundfile==0.13.1
+# build-only:
+pyinstaller>=6.6,<7

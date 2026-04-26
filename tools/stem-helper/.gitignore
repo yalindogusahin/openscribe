@@ -1,0 +1,7 @@
+venv/
+build/
+dist/
+__pycache__/
+*.pyc
+# Bundled weights are ~80 MB — fetched once by build.sh, not committed.
+torch_cache/
