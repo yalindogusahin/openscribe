@@ -25,23 +25,40 @@ jobs:
         id: version
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
 
+      - name: Cache python-build-standalone tarball
+        uses: actions/cache@v4
+        with:
+          path: cpp/build/python-bundle
+          key: pbs-${{ hashFiles('cpp/bundle_helper.sh') }}
+
+      - name: Cache pip wheels
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/pip
+          key: pip-${{ hashFiles('cpp/bundle_helper.sh') }}
+
       - name: Build app bundle
         run: bash cpp/build.sh ${{ steps.version.outputs.VERSION }}
 
-      - name: Zip app bundle
-        run: ditto -c -k --keepParent cpp/OpenScribeNative.app OpenScribeNative-${{ steps.version.outputs.VERSION }}.zip
+      - name: Bundle Python helper into .app
+        run: bash cpp/bundle_helper.sh
+
+      - name: Build DMG
+        run: bash cpp/make_dmg.sh ${{ steps.version.outputs.VERSION }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: OpenScribe ${{ steps.version.outputs.VERSION }}
-          files: OpenScribeNative-${{ steps.version.outputs.VERSION }}.zip
+          files: cpp/OpenScribeNative-${{ steps.version.outputs.VERSION }}.dmg
           generate_release_notes: true
           body: |
             ## Installation
 
-            1. Download `OpenScribeNative-${{ steps.version.outputs.VERSION }}.zip`
-            2. Unzip and move `OpenScribeNative.app` to your Applications folder
-            3. First launch: right-click → Open (macOS Gatekeeper — app is not notarized)
+            1. Download `OpenScribeNative-${{ steps.version.outputs.VERSION }}.dmg`
+            2. Open the DMG and drag **OpenScribe Native** to the **Applications** folder
+            3. First launch: right-click the app in Applications → **Open** (macOS Gatekeeper — app is ad-hoc signed, not notarized)
 
-            **Requires macOS 13 Ventura or later.**
+            **Requires macOS 13 Ventura or later (Apple Silicon).**
+
+            The app is fully self-contained — Python interpreter and ML dependencies are bundled. Stem-separation models (~1 GB) download on first use into `~/Library/Application Support/OpenScribe/`.
