@@ -23,11 +23,36 @@
 }
 
 - (BOOL)isHelperAvailable {
-    if (_helperDir.length == 0) return NO;
+    return [self resolvePython] != nil
+        && [NSFileManager.defaultManager fileExistsAtPath:
+                [_helperDir stringByAppendingPathComponent:@"separate.py"]];
+}
+
+// Two supported layouts:
+//   1. Bundled (production): helper/site-packages/ next to a python
+//      interpreter at $bundle/Contents/Resources/python/bin/python3.11.
+//      Run via that interpreter with PYTHONPATH pointing at site-packages.
+//   2. Dev (legacy): helper/venv/bin/python — a self-contained venv.
+//      Run venv's python directly; site-packages handled internally.
+// Returns the python executable path, or nil if neither layout is intact.
+- (NSString*)resolvePython {
+    if (_helperDir.length == 0) return nil;
     NSFileManager* fm = NSFileManager.defaultManager;
-    NSString* py = [_helperDir stringByAppendingPathComponent:@"venv/bin/python"];
-    NSString* sc = [_helperDir stringByAppendingPathComponent:@"separate.py"];
-    return [fm isExecutableFileAtPath:py] && [fm fileExistsAtPath:sc];
+
+    NSString* venvPy = [_helperDir stringByAppendingPathComponent:@"venv/bin/python"];
+    if ([fm isExecutableFileAtPath:venvPy]) return venvPy;
+
+    NSString* site = [_helperDir stringByAppendingPathComponent:@"site-packages"];
+    if (![fm fileExistsAtPath:site]) return nil;
+    NSString* bundledPy = [NSBundle.mainBundle.resourcePath
+                            stringByAppendingPathComponent:@"python/bin/python3.11"];
+    if ([fm isExecutableFileAtPath:bundledPy]) return bundledPy;
+    return nil;
+}
+
+- (NSString*)bundledSitePackages {
+    NSString* site = [_helperDir stringByAppendingPathComponent:@"site-packages"];
+    return [NSFileManager.defaultManager fileExistsAtPath:site] ? site : nil;
 }
 
 - (BOOL)isRunning {
@@ -46,6 +71,13 @@
                             withIntermediateDirectories:YES
                                              attributes:nil error:nil];
     return root;
+}
+
++ (NSString*)modelCacheRoot {
+    NSArray* a = NSSearchPathForDirectoriesInDomains(
+        NSApplicationSupportDirectory, NSUserDomainMask, YES);
+    NSString* base = a.firstObject ?: NSTemporaryDirectory();
+    return [base stringByAppendingPathComponent:@"OpenScribe"];
 }
 
 + (NSString*)sha256OfString:(NSString*)s {
@@ -121,9 +153,25 @@
                             withIntermediateDirectories:YES
                                              attributes:nil error:nil];
 
-    NSString* py = [_helperDir stringByAppendingPathComponent:@"venv/bin/python"];
+    NSString* py = [self resolvePython];
+    if (!py) {
+        [self emitError:@"Stem helper python interpreter not found."];
+        return;
+    }
     NSString* script = [_helperDir stringByAppendingPathComponent:@"separate.py"];
-    NSString* torchHome = [_helperDir stringByAppendingPathComponent:@"torch_cache"];
+    NSString* sitePackages = [self bundledSitePackages];
+
+    // Per-user model cache. Lives outside the .app so:
+    //   1. The bundled helper directory stays untouched (codesign survives),
+    //   2. Models persist across app updates,
+    //   3. Multiple bundle locations share the same downloads.
+    NSString* cacheRoot = [[self class] modelCacheRoot];
+    NSString* torchHome = [cacheRoot stringByAppendingPathComponent:@"torch_cache"];
+    NSString* sepModels = [cacheRoot stringByAppendingPathComponent:@"audio_separator_models"];
+    [NSFileManager.defaultManager createDirectoryAtPath:torchHome
+                            withIntermediateDirectories:YES attributes:nil error:nil];
+    [NSFileManager.defaultManager createDirectoryAtPath:sepModels
+                            withIntermediateDirectories:YES attributes:nil error:nil];
 
     _task = [[NSTask alloc] init];
     _task.launchPath = py;
@@ -135,7 +183,11 @@
 
     NSMutableDictionary* env = [NSProcessInfo.processInfo.environment mutableCopy];
     env[@"TORCH_HOME"] = torchHome;
+    env[@"OPENSCRIBE_AUDIO_SEPARATOR_MODELS"] = sepModels;
     env[@"PYTHONUNBUFFERED"] = @"1";
+    if (sitePackages.length) {
+        env[@"PYTHONPATH"] = sitePackages;
+    }
     _task.environment = env;
 
     _stdoutPipe = [NSPipe pipe];
@@ -198,6 +250,16 @@
                     [s.delegate stemSeparator:s progress:frac];
                 }
             });
+        } else if ([line hasPrefix:@"stage:"]) {
+            NSString* msg = [[line substringFromIndex:6]
+                stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+            __weak StemSeparator* weakSelf = self;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                StemSeparator* s = weakSelf;
+                if (s && [s.delegate respondsToSelector:@selector(stemSeparator:stage:)]) {
+                    [s.delegate stemSeparator:s stage:msg];
+                }
+            });
         }
     }
 }
@@ -258,6 +320,26 @@
     NSString* fromEnv = NSProcessInfo.processInfo.environment[@"OPENSCRIBE_STEM_HELPER"];
     if ([self looksLikeHelperDir:fromEnv]) return fromEnv;
 
+    // Preferred for production: helper bundled inside the .app at
+    // Contents/Resources/stem-helper/. Self-contained — new users get a
+    // working install on first launch with no external setup.
+    NSString* bundled = [NSBundle.mainBundle.resourcePath
+                            stringByAppendingPathComponent:@"stem-helper"];
+    if ([self looksLikeHelperDir:bundled]) return bundled;
+
+    // Dev override: ~/Library/Application Support/OpenScribe/stem-helper/.
+    // Lets developers iterate on the helper without rebundling the .app.
+    // Lives outside TCC-protected user folders (Desktop/Documents/Downloads),
+    // so Python's per-import file reads don't get throttled by amfid/syspolicyd.
+    NSArray* a = NSSearchPathForDirectoriesInDomains(
+        NSApplicationSupportDirectory, NSUserDomainMask, YES);
+    NSString* appSupport = a.firstObject;
+    if (appSupport.length) {
+        NSString* cand = [[appSupport stringByAppendingPathComponent:@"OpenScribe"]
+                                      stringByAppendingPathComponent:@"stem-helper"];
+        if ([self looksLikeHelperDir:cand]) return cand;
+    }
+
     // Walk up from the app bundle looking for tools/stem-helper/.
     NSString* base = NSBundle.mainBundle.bundlePath;
     for (int i = 0; i < 6 && base.length > 1; i++) {
@@ -276,9 +358,16 @@
 + (BOOL)looksLikeHelperDir:(NSString*)dir {
     if (dir.length == 0) return NO;
     NSFileManager* fm = NSFileManager.defaultManager;
-    NSString* py = [dir stringByAppendingPathComponent:@"venv/bin/python"];
     NSString* sc = [dir stringByAppendingPathComponent:@"separate.py"];
-    return [fm isExecutableFileAtPath:py] && [fm fileExistsAtPath:sc];
+    if (![fm fileExistsAtPath:sc]) return NO;
+
+    // Either dev venv layout, or bundled site-packages layout. resolvePython
+    // (instance method) does the full check including the bundled python
+    // interpreter; here we only need a cheap structural sniff.
+    NSString* venvPy = [dir stringByAppendingPathComponent:@"venv/bin/python"];
+    if ([fm isExecutableFileAtPath:venvPy]) return YES;
+    NSString* site = [dir stringByAppendingPathComponent:@"site-packages"];
+    return [fm fileExistsAtPath:site];
 }
 
 @end

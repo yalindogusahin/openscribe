@@ -21,22 +21,33 @@ from pathlib import Path
 
 
 def _resolve_torch_home() -> None:
-    """Pin TORCH_HOME to a path next to the binary so weights are bundled
-    and we never touch the user's ~/.cache."""
+    """Pin TORCH_HOME so demucs's model downloads land in a stable, writable
+    spot. Order: explicit env > sibling torch_cache (dev/legacy) > nothing
+    (lets torch fall back to ~/.cache, only ever hit for dev outside the
+    .app context)."""
     if os.environ.get("TORCH_HOME"):
         return
-    if getattr(sys, "frozen", False):
-        # PyInstaller bundle
-        base = Path(sys._MEIPASS)  # type: ignore[attr-defined]
-        cand = base / "torch_cache"
-        if cand.exists():
-            os.environ["TORCH_HOME"] = str(cand)
-            return
-    # dev mode: sibling torch_cache dir
     here = Path(__file__).resolve().parent
     cand = here / "torch_cache"
     if cand.exists():
         os.environ["TORCH_HOME"] = str(cand)
+
+
+def _resolve_audio_separator_models() -> Path:
+    """Where audio-separator should look for / download Roformer / MDX
+    weights. The C++ caller pins this to ~/Library/Application Support/
+    OpenScribe/audio_separator_models so models live outside the (signed,
+    read-only) .app bundle and persist across app upgrades."""
+    env = os.environ.get("OPENSCRIBE_AUDIO_SEPARATOR_MODELS")
+    if env:
+        p = Path(env).expanduser()
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+    # dev fallback: sibling dir next to this script
+    here = Path(__file__).resolve().parent
+    p = here / "audio_separator_models"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
 
 def _emit_progress(frac: float) -> None:
@@ -45,33 +56,57 @@ def _emit_progress(frac: float) -> None:
     sys.stdout.flush()
 
 
+def _emit_stage(text: str) -> None:
+    sys.stdout.write(f"stage: {text}\n")
+    sys.stdout.flush()
+
+
 def _install_tqdm_hook():
-    """Replace tqdm.tqdm so demucs's internal progress bar drives our
-    `progress: x` lines."""
+    """Replace tqdm.tqdm so the inner progress bar drives our `progress: x`
+    lines. Both demucs (`apply_model`) and audio-separator (mdxc/roformer
+    inference loops) call `from tqdm import tqdm` at module import time, so
+    patching `tqdm.tqdm` *before* they're imported is sufficient.
+    """
+    import os
     import tqdm as _tqdm_mod
 
     real_tqdm = _tqdm_mod.tqdm
+    null_sink = open(os.devnull, "w")
 
     class HookedTqdm(real_tqdm):  # type: ignore[misc]
         def __init__(self, iterable=None, *a, **kw):
-            kw["disable"] = True  # silence its own bar
+            # Silence tqdm's own visual bar by directing it to /dev/null.
+            # Crucial: do NOT pass `disable=True` — tqdm's __iter__ short-
+            # circuits and never calls update() when disabled, so our hook
+            # would never fire on iter-style usage like `for x in tqdm(...)`.
+            kw["file"] = null_sink
+            kw["mininterval"] = 0
+            kw["miniters"] = 1
             super().__init__(iterable, *a, **kw)
             self._oscribe_total = self.total or (
                 len(iterable) if iterable is not None and hasattr(iterable, "__len__") else 0
             )
-            self._oscribe_done = 0
+            self._oscribe_last = -1.0
             if self._oscribe_total:
                 _emit_progress(0.0)
 
         def update(self, n=1):
             super().update(n)
-            self._oscribe_done += n
             if self._oscribe_total:
-                _emit_progress(self._oscribe_done / self._oscribe_total)
+                frac = self.n / self._oscribe_total
+                # Rate-limit to ~0.5% steps; always emit on completion.
+                if frac - self._oscribe_last >= 0.005 or self.n >= self._oscribe_total:
+                    _emit_progress(frac)
+                    self._oscribe_last = frac
 
     _tqdm_mod.tqdm = HookedTqdm
-    # demucs imports `import tqdm` and uses tqdm.tqdm — patching the module
-    # attribute is sufficient.
+    # Some libs do `from tqdm.auto import tqdm`; patch that path too. Not all
+    # versions of tqdm ship `tqdm.auto`, so guard the import.
+    try:
+        import tqdm.auto as _tqdm_auto
+        _tqdm_auto.tqdm = HookedTqdm
+    except Exception:
+        pass
 
 
 def _load_audio(path: Path, target_sr: int, target_ch: int):
@@ -112,6 +147,94 @@ def _load_audio(path: Path, target_sr: int, target_ch: int):
     return audio
 
 
+def _run_roformer(in_path: Path, out_dir: Path, model_key: str) -> int:
+    """High-quality 2-stem path using audio-separator + BS-Roformer-Viperx-1297.
+
+    Output: vocals.wav + instrumental.wav + stems.json. Same protocol as the
+    demucs path so the C++ caller doesn't have to branch on model.
+    """
+    import json
+    import shutil
+
+    model_dir = _resolve_audio_separator_models()
+
+    # BS-Roformer trained by viperx (SDX23 winner). Outputs vocals + instrumental.
+    model_filename = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
+
+    _emit_stage("Loading RoFormer model")
+    try:
+        from audio_separator.separator import Separator
+    except Exception as e:
+        print(f"error: audio-separator not installed: {e}", file=sys.stderr)
+        return 5
+
+    sep = Separator(
+        output_dir=str(out_dir),
+        output_format="WAV",
+        model_file_dir=str(model_dir),
+    )
+    # audio-separator auto-picks MPS on Apple Silicon, but BS-Roformer's torch
+    # ops stall indefinitely on a metal-gpu-stream tensor copy at ~7.9 GB
+    # resident memory. Force CPU. Slower (~real-time on M1 for vocals/inst)
+    # but deterministic. Revisit when audio-separator exposes a CoreML/ONNX
+    # roformer backend.
+    import torch
+    sep.torch_device     = torch.device("cpu")
+    sep.torch_device_mps = torch.device("cpu")
+    try:
+        sep.load_model(model_filename=model_filename)
+    except Exception as e:
+        print(f"error: failed to load roformer model: {e}", file=sys.stderr)
+        return 6
+
+    _emit_stage("Separating (this can take a few minutes)")
+    try:
+        out_files = sep.separate(str(in_path))
+    except Exception as e:
+        print(f"error: roformer separation failed: {e}", file=sys.stderr)
+        return 7
+
+    _emit_stage("Writing stems")
+
+    # audio-separator names files like
+    #   "<input_stem>_(Vocals)_<model>.wav"  /  "..._(Instrumental)_..."
+    # Normalize to vocals.wav / instrumental.wav so the C++ side and cache
+    # manifest stay model-agnostic.
+    by_role: dict[str, Path] = {}
+    for f in out_files:
+        p = Path(f)
+        if not p.is_absolute():
+            p = out_dir / p
+        low = p.name.lower()
+        if "(vocals)" in low or low.startswith("vocals"):
+            by_role["vocals"] = p
+        elif "(instrumental)" in low or "instrumental" in low:
+            by_role["instrumental"] = p
+
+    written: list[tuple[str, Path]] = []
+    for name in ("vocals", "instrumental"):
+        src = by_role.get(name)
+        if not src or not src.exists():
+            print(f"error: roformer output missing {name}", file=sys.stderr)
+            return 8
+        dst = out_dir / f"{name}.wav"
+        if src.resolve() != dst.resolve():
+            shutil.move(str(src), str(dst))
+        written.append((name, dst))
+
+    manifest = {
+        "model": model_key,
+        "samplerate": 44100,
+        "stems": [{"name": n, "file": p.name} for n, p in written],
+    }
+    (out_dir / "stems.json").write_text(json.dumps(manifest, indent=2))
+
+    _emit_progress(1.0)
+    for n, p_ in written:
+        print(f"info: wrote {n}={p_}", file=sys.stderr)
+    return 0
+
+
 def _pick_device():
     import torch
 
@@ -140,7 +263,7 @@ def main() -> int:
     p.add_argument(
         "--model",
         default="htdemucs",
-        help="demucs model name (default htdemucs; htdemucs_ft for higher quality)",
+        help="model name. demucs: htdemucs, htdemucs_6s. roformer: mel_band_roformer",
     )
     p.add_argument(
         "--shifts",
@@ -160,6 +283,9 @@ def main() -> int:
     _resolve_torch_home()
     _install_tqdm_hook()
 
+    if args.model == "mel_band_roformer":
+        return _run_roformer(in_path, out_dir, args.model)
+
     # Imports after env tweaks so torch picks up TORCH_HOME.
     import numpy as np
     import torch
@@ -170,6 +296,7 @@ def main() -> int:
     device = _pick_device() if args.device == "auto" else args.device
     print(f"info: device={device}", file=sys.stderr)
 
+    _emit_stage("Loading model")
     t0 = time.time()
     try:
         model = get_model(args.model)
@@ -200,6 +327,7 @@ def main() -> int:
     wav -= src_mean
     wav /= src_std
 
+    _emit_stage("Separating")
     t1 = time.time()
     try:
         with torch.no_grad():

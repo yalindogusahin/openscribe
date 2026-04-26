@@ -79,7 +79,9 @@ cat > "$BUNDLE/Contents/Info.plist" <<EOF
 </plist>
 EOF
 
-codesign --force --sign - "$BUNDLE"
+codesign --force --deep --options=runtime \
+         --entitlements entitlements.plist \
+         --sign - "$BUNDLE"
 
 echo "Done: $BUNDLE"
 echo "Run: open $BUNDLE"

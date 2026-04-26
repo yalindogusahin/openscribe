@@ -1,6 +1,14 @@
 # C++ build artifacts
 cpp/build/
 cpp/OpenScribeNative.app
+cpp/*.dmg
+
+# Stem helper local state (large ML models, dev venv)
+tools/stem-helper/audio_separator_models/
+tools/stem-helper/venv/
+
+# Claude Code per-project config
+.claude/
 
 # Xcode
 *.xcodeproj/

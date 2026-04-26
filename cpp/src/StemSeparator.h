@@ -16,6 +16,11 @@
    didFinishWithStems:(NSArray<StemSeparation*>*)stems
                 model:(NSString*)model;
 - (void)stemSeparator:(StemSeparator*)sep didFailWithError:(NSString*)message;
+@optional
+// Helper announces a coarse phase (e.g. "Loading model", "Separating",
+// "Writing stems") so the UI can show *something* during long stretches
+// where the inner tqdm doesn't tick (e.g. RoFormer single-shot inference).
+- (void)stemSeparator:(StemSeparator*)sep stage:(NSString*)message;
 @end
 
 // Wraps the offline htdemucs helper at tools/stem-helper/. Resolves a helper

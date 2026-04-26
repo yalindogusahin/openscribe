@@ -80,6 +80,9 @@ struct IsolateState {
 @property (nonatomic, strong) NSProgressIndicator* separateProgress;
 @property (nonatomic, strong) NSTextField* separateStatusLabel;
 @property (nonatomic, strong) NSPopUpButton* stemModelPopup;
+@property (nonatomic, copy)   NSString* currentSeparateStage;
+@property (nonatomic, assign) NSTimeInterval separateStartTime;
+@property (nonatomic, strong) NSTimer* separateElapsedTimer;
 @property (nonatomic, strong) NSArray<NSButton*>* stemMuteButtons;
 @property (nonatomic, strong) NSArray<NSButton*>* stemSoloButtons;
 @property (nonatomic, strong) NSArray<NSSlider*>* stemGainSliders;
@@ -919,9 +922,13 @@ struct IsolateState {
     self.stemModelPopup.lastItem.representedObject = @"htdemucs";
     [self.stemModelPopup addItemWithTitle:@"+ Guitar / Piano (6 stems, slower)"];
     self.stemModelPopup.lastItem.representedObject = @"htdemucs_6s";
+    [self.stemModelPopup addItemWithTitle:@"High quality (vocals + instrumental)"];
+    self.stemModelPopup.lastItem.representedObject = @"mel_band_roformer";
     self.stemModelPopup.target = self;
     self.stemModelPopup.action = @selector(stemModelChanged:);
-    NSInteger sel = [self.stemModel isEqualToString:@"htdemucs_6s"] ? 1 : 0;
+    NSInteger sel = 0;
+    if ([self.stemModel isEqualToString:@"htdemucs_6s"])              sel = 1;
+    else if ([self.stemModel isEqualToString:@"mel_band_roformer"])   sel = 2;
     [self.stemModelPopup selectItemAtIndex:sel];
     [container addSubview:self.stemModelPopup];
     y += 28;
@@ -1150,7 +1157,18 @@ static double hzToSlider(double hz) {
 
     self.separateProgress.hidden = NO;
     self.separateProgress.doubleValue = 0.0;
-    self.separateStatusLabel.stringValue = @"Loading model…";
+    self.separateProgress.indeterminate = YES;
+    [self.separateProgress startAnimation:nil];
+    self.currentSeparateStage = @"Starting";
+    self.separateStartTime = [NSDate.date timeIntervalSince1970];
+    self.separateStatusLabel.stringValue = @"Starting… (0s)";
+    [self.separateElapsedTimer invalidate];
+    self.separateElapsedTimer = [NSTimer scheduledTimerWithTimeInterval:1.0
+                                                                 repeats:YES
+                                                                   block:^(NSTimer* t) {
+        (void)t;
+        [self refreshSeparateElapsedLabel];
+    }];
     [self.stemSeparator separateFile:input model:model];
     [self syncStemMixerControls];
     self.separateStemsButton.enabled = NO;
@@ -1207,24 +1225,81 @@ static double hzToSlider(double hz) {
 
 - (void)stemSeparator:(StemSeparator*)sep progress:(double)frac {
     (void)sep;
+    if (self.separateProgress.indeterminate) {
+        [self.separateProgress stopAnimation:nil];
+        self.separateProgress.indeterminate = NO;
+    }
     self.separateProgress.doubleValue = frac;
+    NSString* base = self.currentSeparateStage.length ? self.currentSeparateStage : @"Separating";
+    NSTimeInterval elapsed = self.separateStartTime > 0
+        ? [NSDate.date timeIntervalSince1970] - self.separateStartTime : 0.0;
     self.separateStatusLabel.stringValue =
-        [NSString stringWithFormat:@"Separating… %d%%", (int)std::round(frac * 100.0)];
+        [NSString stringWithFormat:@"%@ — %d%% (%@)", base,
+         (int)std::round(frac * 100.0), [self formatElapsed:elapsed]];
+}
+
+- (void)stemSeparator:(StemSeparator*)sep stage:(NSString*)message {
+    (void)sep;
+    self.currentSeparateStage = message;
+    // Stage transitions reset the bar to indeterminate until the next
+    // progress line lands — RoFormer can spend minutes in a single stage
+    // without ticking, and a frozen 0% bar reads like a hang.
+    self.separateProgress.indeterminate = YES;
+    [self.separateProgress startAnimation:nil];
+    NSTimeInterval elapsed = self.separateStartTime > 0
+        ? [NSDate.date timeIntervalSince1970] - self.separateStartTime : 0.0;
+    self.separateStatusLabel.stringValue =
+        [NSString stringWithFormat:@"%@… (%@)", message, [self formatElapsed:elapsed]];
+}
+
+- (NSString*)formatElapsed:(NSTimeInterval)s {
+    int total = (int)s;
+    int m = total / 60;
+    int sec = total % 60;
+    if (m > 0) return [NSString stringWithFormat:@"%dm %02ds", m, sec];
+    return [NSString stringWithFormat:@"%ds", sec];
+}
+
+- (void)refreshSeparateElapsedLabel {
+    if (self.separateStartTime <= 0 || !self.currentSeparateStage.length) return;
+    NSTimeInterval elapsed = [NSDate.date timeIntervalSince1970] - self.separateStartTime;
+    if (self.separateProgress.indeterminate) {
+        self.separateStatusLabel.stringValue =
+            [NSString stringWithFormat:@"%@… (%@)", self.currentSeparateStage,
+             [self formatElapsed:elapsed]];
+    } else {
+        int pct = (int)std::round(self.separateProgress.doubleValue * 100.0);
+        self.separateStatusLabel.stringValue =
+            [NSString stringWithFormat:@"%@ — %d%% (%@)", self.currentSeparateStage,
+             pct, [self formatElapsed:elapsed]];
+    }
 }
 
 - (void)stemSeparator:(StemSeparator*)sep
    didFinishWithStems:(NSArray<StemSeparation*>*)stems
                 model:(NSString*)model {
     (void)sep; (void)model;
+    [self.separateElapsedTimer invalidate];
+    self.separateElapsedTimer = nil;
+    [self.separateProgress stopAnimation:nil];
+    self.separateProgress.indeterminate = NO;
     self.separateProgress.hidden = YES;
     self.separateProgress.doubleValue = 0.0;
+    self.currentSeparateStage = nil;
+    self.separateStartTime = 0;
     self.separateStatusLabel.stringValue = @"Done.";
     [self loadStemsFromSeparation:stems];
 }
 
 - (void)stemSeparator:(StemSeparator*)sep didFailWithError:(NSString*)message {
     (void)sep;
+    [self.separateElapsedTimer invalidate];
+    self.separateElapsedTimer = nil;
+    [self.separateProgress stopAnimation:nil];
+    self.separateProgress.indeterminate = NO;
     self.separateProgress.hidden = YES;
+    self.currentSeparateStage = nil;
+    self.separateStartTime = 0;
     self.separateStatusLabel.stringValue =
         [NSString stringWithFormat:@"Failed: %@",
          [message stringByReplacingOccurrencesOfString:@"\n" withString:@" "]];
