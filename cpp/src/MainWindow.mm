@@ -2,9 +2,30 @@
 #import "WaveformView.h"
 #import <QuartzCore/QuartzCore.h>
 
+@implementation OSResettableSlider
+- (instancetype)initWithFrame:(NSRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) _resetValue = 0.0;
+    return self;
+}
+- (void)mouseDown:(NSEvent*)event {
+    if (event.clickCount == 2) {
+        self.doubleValue = self.resetValue;
+        if (self.target && self.action) {
+            [NSApp sendAction:self.action to:self.target from:self];
+        }
+        return;
+    }
+    [super mouseDown:event];
+}
+@end
+
 // Container for per-stem mixer rows. Lays its subviews into N equal-height
-// rows so each row aligns with its waveform lane on the right.
-@interface StemMixerSidebar : NSView
+// rows so each row aligns with its waveform lane on the right. Also hosts
+// the drag-to-reorder gesture: rows call -beginDragForRow:event: from their
+// own mouseDown when the click lands on a non-control area.
+@interface StemMixerSidebar : NSView <OSStemRowDragHost>
+@property (nonatomic, copy) void (^reorderHandler)(NSInteger from, NSInteger to);
 @end
 
 @implementation StemMixerSidebar
@@ -19,6 +40,100 @@
     CGFloat rowH = H / (CGFloat)n;
     for (NSInteger i = 0; i < n; i++) {
         rows[i].frame = NSMakeRect(0, (CGFloat)i * rowH, W, rowH);
+    }
+}
+
+- (void)beginDragForRow:(NSView*)dragRow event:(NSEvent*)downEvent {
+    // Snapshot the original row order before any subview reshuffling so we
+    // can compute display slots independently of self.subviews mutations.
+    NSArray<NSView*>* rows = [self.subviews copy];
+    NSInteger n = (NSInteger)rows.count;
+    NSInteger origIndex = [rows indexOfObject:dragRow];
+    if (origIndex == NSNotFound || n < 2) return;
+
+    CGFloat rowH = self.bounds.size.height / (CGFloat)n;
+    NSPoint pStart = [self convertPoint:downEvent.locationInWindow fromView:nil];
+    CGFloat grabOffsetY = pStart.y - dragRow.frame.origin.y;
+
+    NSInteger curIndex = origIndex;
+    BOOL didStartDrag = NO;
+    static const CGFloat kDragThreshold = 4.0;
+
+    NSEventMask mask = NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp;
+    while (YES) {
+        NSEvent* e = [self.window nextEventMatchingMask:mask
+                                              untilDate:NSDate.distantFuture
+                                                 inMode:NSEventTrackingRunLoopMode
+                                                dequeue:YES];
+        if (!e || e.type == NSEventTypeLeftMouseUp) break;
+
+        NSPoint p = [self convertPoint:e.locationInWindow fromView:nil];
+        if (!didStartDrag) {
+            // Wait for a real movement before starting visual drag — a plain
+            // click on the row body shouldn't kick off a reorder.
+            if (fabs(p.y - pStart.y) < kDragThreshold &&
+                fabs(p.x - pStart.x) < kDragThreshold) continue;
+            didStartDrag = YES;
+            // Bring the row to the front so it draws over its neighbors and
+            // give it a small lift effect.
+            [self addSubview:dragRow positioned:NSWindowAbove relativeTo:nil];
+            dragRow.wantsLayer = YES;
+            dragRow.layer.zPosition = 100;
+            dragRow.layer.shadowOpacity = 0.45;
+            dragRow.layer.shadowRadius = 8;
+            dragRow.layer.shadowOffset = CGSizeMake(0, 2);
+            dragRow.layer.shadowColor = [NSColor blackColor].CGColor;
+            dragRow.alphaValue = 0.92;
+        }
+
+        CGFloat newY = p.y - grabOffsetY;
+        if (newY < 0) newY = 0;
+        if (newY > self.bounds.size.height - rowH) {
+            newY = self.bounds.size.height - rowH;
+        }
+        NSRect f = dragRow.frame;
+        f.origin.y = newY;
+        dragRow.frame = f;
+
+        // Target slot follows the dragged row's vertical center.
+        CGFloat dragCenter = newY + rowH / 2.0;
+        NSInteger newIndex = (NSInteger)floor(dragCenter / rowH);
+        if (newIndex < 0) newIndex = 0;
+        if (newIndex >= n) newIndex = n - 1;
+
+        if (newIndex != curIndex) {
+            curIndex = newIndex;
+            // Slide the unaffected rows out of the dragged row's way. We do
+            // this by computing each row's display slot under the assumption
+            // that the dragged row will land at curIndex; rows in between
+            // shift one slot toward the original index.
+            for (NSInteger i = 0; i < n; ++i) {
+                NSView* r = rows[i];
+                if (r == dragRow) continue;
+                NSInteger newSlot = i;
+                if (origIndex < curIndex) {
+                    if (i > origIndex && i <= curIndex) newSlot = i - 1;
+                } else if (origIndex > curIndex) {
+                    if (i >= curIndex && i < origIndex) newSlot = i + 1;
+                }
+                NSRect target = NSMakeRect(0, (CGFloat)newSlot * rowH,
+                                           self.bounds.size.width, rowH);
+                r.frame = target;
+            }
+        }
+    }
+
+    // Restore visual state — the model commit (or no-op) happens after.
+    dragRow.alphaValue = 1.0;
+    dragRow.layer.zPosition = 0;
+    dragRow.layer.shadowOpacity = 0.0;
+
+    if (didStartDrag && curIndex != origIndex && self.reorderHandler) {
+        self.reorderHandler(origIndex, curIndex);
+    } else {
+        // No movement (or release without crossing a slot boundary): restore
+        // the original layout.
+        [self resizeSubviewsWithOldSize:self.bounds.size];
     }
 }
 @end
@@ -192,15 +307,16 @@ static NSButton* makeIconButton(NSRect frame, NSString* symbol, CGFloat pointSiz
 
     auto layoutGroup =
         ^(CGFloat groupX, NSString* labelText, NSSlider* slider,
-          NSTextField* valueLabel, NSButton* reset) {
+          NSTextField* valueLabel, NSButton* reset,
+          NSString* minText, NSString* maxText) {
         NSTextField* lbl = makeLabel(
             NSMakeRect(groupX, sliderRowY_, labelW, sliderRowH),
             labelText, NSTextAlignmentLeft);
         applyTrackedCaps(lbl, 1.6);
         [self.contentView addSubview:lbl];
 
-        slider.frame = NSMakeRect(groupX + labelW + innerGap,
-                                  sliderRowY_, sliderW, sliderRowH);
+        CGFloat sliderX = groupX + labelW + innerGap;
+        slider.frame = NSMakeRect(sliderX, sliderRowY_, sliderW, sliderRowH);
         slider.continuous = YES;
         [self.contentView addSubview:slider];
 
@@ -212,37 +328,70 @@ static NSButton* makeIconButton(NSRect frame, NSString* symbol, CGFloat pointSiz
         reset.frame = NSMakeRect(groupX + groupW - resetW,
                                  sliderRowY_, resetW, sliderRowH);
         [self.contentView addSubview:reset];
+
+        // Bound hints: tiny min/max labels tucked below the slider track so
+        // the user can read the slider's range without dragging to find it.
+        // Width is half the slider so the two labels meet near the centre.
+        CGFloat boundY = sliderRowY_ - 12;
+        CGFloat halfW = sliderW / 2.0;
+        NSTextField* minLbl = makeLabel(
+            NSMakeRect(sliderX, boundY, halfW, 11),
+            minText, NSTextAlignmentLeft);
+        minLbl.font = [NSFont monospacedDigitSystemFontOfSize:9
+                                                       weight:NSFontWeightRegular];
+        minLbl.textColor = [NSColor colorWithWhite:0.50 alpha:1.0];
+        [self.contentView addSubview:minLbl];
+
+        NSTextField* maxLbl = makeLabel(
+            NSMakeRect(sliderX + halfW, boundY, halfW, 11),
+            maxText, NSTextAlignmentRight);
+        maxLbl.font = [NSFont monospacedDigitSystemFontOfSize:9
+                                                       weight:NSFontWeightRegular];
+        maxLbl.textColor = [NSColor colorWithWhite:0.50 alpha:1.0];
+        [self.contentView addSubview:maxLbl];
     };
 
     // VOLUME (leftmost)
-    self.volumeSlider = [[NSSlider alloc] init];
-    self.volumeSlider.minValue = 0.0;
-    self.volumeSlider.maxValue = 1.5;
-    self.volumeSlider.doubleValue = 1.0;
+    OSResettableSlider* volSlider = [[OSResettableSlider alloc] init];
+    volSlider.minValue = 0.0;
+    volSlider.maxValue = 1.5;
+    volSlider.doubleValue = 1.0;
+    volSlider.resetValue = 1.0;
+    volSlider.toolTip = @"Drag to adjust volume (0–150%). Double-click to reset to 100%.";
+    self.volumeSlider = volSlider;
     self.volumeLabel = makeMonoLabel(NSZeroRect, @"100%", NSTextAlignmentRight);
     self.volumeResetButton = makeResetButton(NSZeroRect);
     layoutGroup(margin, @"VOLUME", self.volumeSlider,
-                self.volumeLabel, self.volumeResetButton);
+                self.volumeLabel, self.volumeResetButton,
+                @"0%", @"150%");
 
     // PITCH (center)
-    self.pitchSlider = [[NSSlider alloc] init];
-    self.pitchSlider.minValue = -1200.0;
-    self.pitchSlider.maxValue =  1200.0;
-    self.pitchSlider.doubleValue = 0.0;
+    OSResettableSlider* pSlider = [[OSResettableSlider alloc] init];
+    pSlider.minValue = -1200.0;
+    pSlider.maxValue =  1200.0;
+    pSlider.doubleValue = 0.0;
+    pSlider.resetValue = 0.0;
+    pSlider.toolTip = @"Drag to shift pitch (–12 to +12 semitones). Double-click to reset to 0.";
+    self.pitchSlider = pSlider;
     self.pitchLabel = makeMonoLabel(NSZeroRect, @"+0.00 st", NSTextAlignmentRight);
     self.pitchResetButton = makeResetButton(NSZeroRect);
     layoutGroup(margin + groupW + groupGap, @"PITCH", self.pitchSlider,
-                self.pitchLabel, self.pitchResetButton);
+                self.pitchLabel, self.pitchResetButton,
+                @"-12 st", @"+12 st");
 
     // SPEED (right)
-    self.speedSlider = [[NSSlider alloc] init];
-    self.speedSlider.minValue = 0.25;
-    self.speedSlider.maxValue = 2.0;
-    self.speedSlider.doubleValue = 1.0;
+    OSResettableSlider* sSlider = [[OSResettableSlider alloc] init];
+    sSlider.minValue = 0.25;
+    sSlider.maxValue = 2.0;
+    sSlider.doubleValue = 1.0;
+    sSlider.resetValue = 1.0;
+    sSlider.toolTip = @"Drag to adjust speed (0.25× to 2×). Double-click to reset to 1×.";
+    self.speedSlider = sSlider;
     self.speedLabel = makeMonoLabel(NSZeroRect, @"1.00x", NSTextAlignmentRight);
     self.speedResetButton = makeResetButton(NSZeroRect);
     layoutGroup(margin + 2 * (groupW + groupGap), @"SPEED", self.speedSlider,
-                self.speedLabel, self.speedResetButton);
+                self.speedLabel, self.speedResetButton,
+                @"0.25x", @"2.00x");
 
     // TRANSPORT row, sits above the sliders
     CGFloat transportY = sliderRowY_ + sliderRowH + gap + 4;
@@ -461,6 +610,10 @@ static NSButton* makeIconButton(NSRect frame, NSString* symbol, CGFloat pointSiz
     self.waveformView.frame = wf;
 
     [self.stemSidebar resizeSubviewsWithOldSize:sf.size];
+}
+
+- (void)setStemReorderHandler:(void (^)(NSInteger from, NSInteger to))handler {
+    ((StemMixerSidebar*)self.stemSidebar).reorderHandler = handler;
 }
 
 - (void)updatePlayPauseButton:(BOOL)playing {
