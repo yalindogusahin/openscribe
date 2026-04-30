@@ -230,6 +230,24 @@ bool AudioEngine::setupOutputUnit() {
         currentDeviceUID_ = DeviceUIDString(dev);
     }
 
+    // Listen for system default-device changes so connecting Bluetooth
+    // headphones (or any other route change) after launch automatically
+    // moves audio to the new device. HAL output units don't follow the
+    // system default on their own — once bound, they stay bound until we
+    // explicitly rebind, which is what rebindToDefaultDevice does.
+    if (!deviceListenerInstalled_) {
+        AudioObjectPropertyAddress addr = {
+            kAudioHardwarePropertyDefaultOutputDevice,
+            kAudioObjectPropertyScopeGlobal,
+            kAudioObjectPropertyElementMain
+        };
+        OSStatus ls = AudioObjectAddPropertyListener(
+            kAudioObjectSystemObject, &addr,
+            &AudioEngine::defaultDeviceChanged, this);
+        if (ls == noErr) deviceListenerInstalled_ = true;
+        else NSLog(@"default-device listener install failed: %d", (int)ls);
+    }
+
     // 2. NewTimePitch — pitch-preserving rate change.
     AudioComponentDescription tpDesc = {};
     tpDesc.componentType = kAudioUnitType_FormatConverter;
@@ -274,6 +292,17 @@ bool AudioEngine::setupOutputUnit() {
 }
 
 void AudioEngine::teardownOutputUnit() {
+    if (deviceListenerInstalled_) {
+        AudioObjectPropertyAddress addr = {
+            kAudioHardwarePropertyDefaultOutputDevice,
+            kAudioObjectPropertyScopeGlobal,
+            kAudioObjectPropertyElementMain
+        };
+        AudioObjectRemovePropertyListener(
+            kAudioObjectSystemObject, &addr,
+            &AudioEngine::defaultDeviceChanged, this);
+        deviceListenerInstalled_ = false;
+    }
     if (outputUnit_) {
         AudioOutputUnitStop(outputUnit_);
         AudioUnitUninitialize(outputUnit_);
@@ -285,6 +314,45 @@ void AudioEngine::teardownOutputUnit() {
         AudioComponentInstanceDispose(timePitch_);
         timePitch_ = nullptr;
     }
+}
+
+OSStatus AudioEngine::defaultDeviceChanged(AudioObjectID,
+                                           UInt32,
+                                           const AudioObjectPropertyAddress*,
+                                           void* inClientData) {
+    // Property listeners run on a CoreAudio-owned thread; bounce to main so
+    // we can mutate engine state without contending with the audio thread.
+    AudioEngine* self = static_cast<AudioEngine*>(inClientData);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self->followsSystemDefault_) self->rebindToDefaultDevice();
+    });
+    return noErr;
+}
+
+void AudioEngine::rebindToDefaultDevice() {
+    if (!outputUnit_) return;
+    AudioDeviceID dev = DefaultOutputDeviceID();
+    if (dev == kAudioObjectUnknown) return;
+
+    // Skip if already pointing at the right device — avoids a glitch every
+    // time some unrelated property listener fires.
+    AudioDeviceID current = kAudioObjectUnknown;
+    UInt32 sz = sizeof(current);
+    AudioUnitGetProperty(outputUnit_, kAudioOutputUnitProperty_CurrentDevice,
+                         kAudioUnitScope_Global, 0, &current, &sz);
+    if (current == dev) return;
+
+    bool wasPlaying = playing_.load();
+    AudioOutputUnitStop(outputUnit_);
+    AudioUnitUninitialize(outputUnit_);
+    OSStatus s = AudioUnitSetProperty(outputUnit_,
+                                      kAudioOutputUnitProperty_CurrentDevice,
+                                      kAudioUnitScope_Global, 0,
+                                      &dev, sizeof(dev));
+    if (s != noErr) NSLog(@"rebind set device fail: %d", (int)s);
+    AudioUnitInitialize(outputUnit_);
+    if (wasPlaying) AudioOutputUnitStart(outputUnit_);
+    currentDeviceUID_ = DeviceUIDString(dev);
 }
 
 void AudioEngine::rebuildMixedWaveform() {
@@ -419,6 +487,41 @@ void AudioEngine::clearStemSolosAndMutes() {
     anySoloed_.store(0);
 }
 
+void AudioEngine::reorderStems(const std::vector<int>& newOrder) {
+    if ((int)newOrder.size() != stemCount_) return;
+    // Validate: every index in [0, stemCount_) appears exactly once.
+    std::array<bool, kMaxStems> seen{};
+    for (int idx : newOrder) {
+        if (idx < 0 || idx >= stemCount_ || seen[(size_t)idx]) return;
+        seen[(size_t)idx] = true;
+    }
+
+    // Snapshot per-stem state, then write into the new positions. The audio
+    // thread may read mid-permutation; bounds stay valid (stemCount_ doesn't
+    // change) so the worst case is a single buffer with mixed-up gains.
+    std::array<float, kMaxStems> gainSnap{};
+    std::array<bool,  kMaxStems> muteSnap{};
+    std::array<bool,  kMaxStems> soloSnap{};
+    for (int i = 0; i < stemCount_; ++i) {
+        gainSnap[(size_t)i] = stemGain_[(size_t)i].load();
+        muteSnap[(size_t)i] = stemMuted_[(size_t)i].load();
+        soloSnap[(size_t)i] = stemSoloed_[(size_t)i].load();
+    }
+    std::vector<std::vector<float>> samplesSnap;
+    samplesSnap.reserve(stemSamples_.size());
+    for (auto& v : stemSamples_) samplesSnap.emplace_back(std::move(v));
+
+    for (int newIdx = 0; newIdx < stemCount_; ++newIdx) {
+        int oldIdx = newOrder[(size_t)newIdx];
+        stemSamples_[(size_t)newIdx] = std::move(samplesSnap[(size_t)oldIdx]);
+        stemGain_[(size_t)newIdx].store(gainSnap[(size_t)oldIdx]);
+        stemMuted_[(size_t)newIdx].store(muteSnap[(size_t)oldIdx]);
+        stemSoloed_[(size_t)newIdx].store(soloSnap[(size_t)oldIdx]);
+    }
+    // mixedWaveform_ is the unity-gain sum of all stems — order-invariant,
+    // no recompute needed.
+}
+
 void AudioEngine::play() {
     if (stemCount_ == 0 || totalFrames_ == 0) return;
     OSStatus s = AudioOutputUnitStart(outputUnit_);
@@ -495,6 +598,10 @@ bool AudioEngine::setOutputDeviceUID(const std::string& uid) {
     AudioUnitInitialize(outputUnit_);
     if (wasPlaying) AudioOutputUnitStart(outputUnit_);
     currentDeviceUID_ = uid.empty() ? DeviceUIDString(dev) : uid;
+    // An empty UID means "follow system default"; anything else pins us to
+    // a specific device and the default-device listener should leave us
+    // alone.
+    followsSystemDefault_ = uid.empty();
     return s == noErr;
 }
 

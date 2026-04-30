@@ -38,6 +38,13 @@ public:
     bool stemSoloed(int index) const;
     void clearStemSolosAndMutes();
 
+    // Permutes stem buffers + per-stem state (gain/mute/solo) so that what
+    // used to be stem `newOrder[k]` is at index k after the call.
+    // Requires newOrder.size() == stemCount() and to be a valid permutation
+    // of [0, stemCount()). Safe to call while playing — at worst one buffer
+    // of audio reads transitional state, no out-of-range access can occur.
+    void reorderStems(const std::vector<int>& newOrder);
+
     void play();
     void pause();
     void stop();
@@ -125,6 +132,19 @@ private:
     bool setupOutputUnit();
     void teardownOutputUnit();
 
+    // Re-bind the HAL output unit to the system default device. Safe to call
+    // while playing — preserves play state across the rebind. Used by the
+    // default-device listener so connecting/disconnecting Bluetooth (or any
+    // other route change) follows automatically.
+    void rebindToDefaultDevice();
+
+    // Property-listener callback for kAudioHardwarePropertyDefaultOutputDevice.
+    // Trampoline that dispatches to the main queue.
+    static OSStatus defaultDeviceChanged(AudioObjectID inObjectID,
+                                         UInt32 inNumberAddresses,
+                                         const AudioObjectPropertyAddress* inAddresses,
+                                         void* inClientData);
+
     // Recompute mixedWaveform_ from current stemSamples_ at unity gain.
     // Called from load()/loadStems() (main thread, output stopped).
     void rebuildMixedWaveform();
@@ -132,6 +152,11 @@ private:
     AudioUnit outputUnit_ = nullptr;
     AudioUnit timePitch_ = nullptr;
     std::string currentDeviceUID_;
+    // True when the user has not pinned a specific output device: the engine
+    // tracks the system default and rebinds itself when it changes (e.g.
+    // Bluetooth headphones connecting after launch).
+    bool followsSystemDefault_ = true;
+    bool deviceListenerInstalled_ = false;
     double sampleRate_ = 48000.0;
     double speed_ = 1.0;
     double pitch_ = 0.0;
