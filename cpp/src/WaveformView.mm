@@ -161,13 +161,51 @@ typedef NS_ENUM(NSInteger, DragMode) {
     DragPan,
 };
 
+@interface StemLabelsView : NSView
+@property (nonatomic, copy) NSArray<NSString*>* names;
+@property (nonatomic, copy) NSArray<NSColor*>* colors;
+@end
+
+@implementation StemLabelsView
+- (BOOL)isFlipped { return YES; }
+- (NSView*)hitTest:(NSPoint)point { (void)point; return nil; }  // mouse passes through
+- (void)drawRect:(NSRect)dirty {
+    (void)dirty;
+    NSUInteger n = _names.count;
+    if (n < 2) return;
+    CGFloat H = self.bounds.size.height;
+    CGFloat lane = H / (CGFloat)n;
+    NSDictionary* shadow = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold],
+        NSForegroundColorAttributeName: [NSColor colorWithWhite:0.0 alpha:0.55],
+    };
+    for (NSUInteger i = 0; i < n; i++) {
+        NSColor* c = (i < _colors.count) ? _colors[i] : [NSColor whiteColor];
+        NSDictionary* attrs = @{
+            NSFontAttributeName: [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold],
+            NSForegroundColorAttributeName: c,
+        };
+        NSString* label = [_names[i] uppercaseString];
+        NSPoint p = NSMakePoint(8.0, (CGFloat)i * lane + 4.0);
+        [label drawAtPoint:NSMakePoint(p.x + 0.5, p.y + 0.5) withAttributes:shadow];
+        [label drawAtPoint:p withAttributes:attrs];
+    }
+}
+@end
+
 @interface WaveformView () {
     AudioEngine* _engine;
     id<MTLDevice> _device;
     id<MTLCommandQueue> _queue;
     id<MTLRenderPipelineState> _pso;
-    std::vector<float> _peaksMin;
-    std::vector<float> _peaksMax;
+    // Per-stem peak buffers. Single-stem load → one entry; stems load → N.
+    std::vector<std::vector<float>> _peaksMin;
+    std::vector<std::vector<float>> _peaksMax;
+    NSArray<NSString*>* _stemNames;
+    StemLabelsView* _stemLabels;
+    // MIDI piano-roll overlay, keyed by stem name. Each value is an
+    // NSArray of NSDictionary {start, end, pitch, velocity}.
+    NSMutableDictionary<NSString*, NSArray<NSDictionary*>*>* _midiNotes;
     DragMode _dragMode;
     double _dragAnchorSec;
     double _dragStartLoopStartSec;
@@ -199,9 +237,10 @@ typedef NS_ENUM(NSInteger, DragMode) {
     _queue = [device newCommandQueue];
     _viewStart = 0.0;
     _viewEnd = 1.0;
+    _midiNotes = [NSMutableDictionary dictionary];
 
     self.colorPixelFormat = MTLPixelFormatBGRA8Unorm;
-    self.clearColor = MTLClearColorMake(0.07, 0.07, 0.08, 1.0);
+    self.clearColor = MTLClearColorMake(0.058, 0.062, 0.070, 1.0);
     self.preferredFramesPerSecond = 60;
     self.enableSetNeedsDisplay = NO;
     self.paused = NO;
@@ -240,8 +279,46 @@ typedef NS_ENUM(NSInteger, DragMode) {
     _zoomLabel.autoresizingMask = NSViewMinXMargin | NSViewMinYMargin;
     [self addSubview:_zoomLabel];
 
+    // Stem labels overlay sits behind the ruler/bookmark layers but above the
+    // Metal waveform. Sized to the area below the ruler so each lane label
+    // lands on the correct waveform slot.
+    NSRect stemFrame = NSMakeRect(0, 0, frame.size.width,
+                                  std::max<CGFloat>(1.0, frame.size.height - rulerH - bmH));
+    _stemLabels = [[StemLabelsView alloc] initWithFrame:stemFrame];
+    _stemLabels.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    [self addSubview:_stemLabels positioned:NSWindowBelow relativeTo:_bookmarkLabels];
+
     [self rebuildTrackingArea];
     return self;
+}
+
+- (void)setMIDINotes:(NSArray<NSDictionary*>*)notes forStemName:(NSString*)stemName {
+    if (stemName.length == 0) return;
+    if (notes.count > 0) {
+        _midiNotes[stemName] = [notes copy];
+    } else {
+        [_midiNotes removeObjectForKey:stemName];
+    }
+    [self setNeedsDisplay:YES];
+}
+
+- (void)clearAllMIDINotes {
+    [_midiNotes removeAllObjects];
+    [self setNeedsDisplay:YES];
+}
+
+- (void)setStemNames:(NSArray<NSString*>*)names {
+    _stemNames = [names copy];
+    NSMutableArray<NSColor*>* cols = [NSMutableArray arrayWithCapacity:names.count];
+    for (NSUInteger i = 0; i < names.count; i++) {
+        [cols addObject:[WaveformView nsStemColorForIndex:(int)i name:names[i]]];
+    }
+    _stemLabels.names = _stemNames;
+    _stemLabels.colors = cols;
+    [_stemLabels setNeedsDisplay:YES];
+    // Lane count and peaks come from the engine, not the names — colors are
+    // read at draw time from the latest _stemNames, so a redraw is enough.
+    [self setNeedsDisplay:YES];
 }
 
 - (void)rebuildTrackingArea {
@@ -360,38 +437,77 @@ typedef NS_ENUM(NSInteger, DragMode) {
 }
 
 - (void)computePeaks {
-    // AudioEngine samples are private; expose enough via duration + a peak
-    // helper would be cleaner. For now, recompute by reading samples through
-    // a friend-ish API: we'll skip if the file is empty.
+    _peaksMin.clear();
+    _peaksMax.clear();
+
     double dur = _engine->duration();
-    if (dur <= 0.0) {
-        _peaksMin.clear();
-        _peaksMax.clear();
-        return;
-    }
+    if (dur <= 0.0) return;
+
+    int n = _engine->stemCount();
+    if (n <= 0) return;
 
     int64_t totalFrames = static_cast<int64_t>(dur * _engine->sampleRate());
     int bins = kPeakBins;
-    _peaksMin.assign(bins, 0.0f);
-    _peaksMax.assign(bins, 0.0f);
-
-    // Pull samples via the engine's accessor (added below in AudioEngine).
-    const float* s = _engine->samplesPtr();
-    if (!s) return;
-
     int64_t framesPerBin = std::max<int64_t>(1, totalFrames / bins);
-    for (int b = 0; b < bins; ++b) {
-        int64_t start = b * framesPerBin;
-        int64_t end = std::min<int64_t>(start + framesPerBin, totalFrames);
-        float mn = 0.0f, mx = 0.0f;
-        for (int64_t f = start; f < end; ++f) {
-            float v = 0.5f * (s[f * 2 + 0] + s[f * 2 + 1]);
-            if (v < mn) mn = v;
-            if (v > mx) mx = v;
+
+    _peaksMin.resize((size_t)n);
+    _peaksMax.resize((size_t)n);
+
+    for (int k = 0; k < n; ++k) {
+        const float* s = _engine->stemSamplesPtr(k);
+        // Fall back to the unity-mix buffer when only one stem exists. This
+        // matches old behavior for single-file loads where samplesPtr is the
+        // canonical source.
+        if (!s && n == 1) s = _engine->samplesPtr();
+        if (!s) continue;
+
+        std::vector<float>& mins = _peaksMin[(size_t)k];
+        std::vector<float>& maxs = _peaksMax[(size_t)k];
+        mins.assign(bins, 0.0f);
+        maxs.assign(bins, 0.0f);
+
+        for (int b = 0; b < bins; ++b) {
+            int64_t start = (int64_t)b * framesPerBin;
+            int64_t end = std::min<int64_t>(start + framesPerBin, totalFrames);
+            float mn = 0.0f, mx = 0.0f;
+            for (int64_t f = start; f < end; ++f) {
+                float v = 0.5f * (s[f * 2 + 0] + s[f * 2 + 1]);
+                if (v < mn) mn = v;
+                if (v > mx) mx = v;
+            }
+            mins[b] = mn;
+            maxs[b] = mx;
         }
-        _peaksMin[b] = mn;
-        _peaksMax[b] = mx;
     }
+}
+
+// Stem palette — index-keyed but tweaked by name when recognizable. Stable
+// across runs so users build muscle memory: vocals always pink, drums orange,
+// bass green, etc. Picked for distinguishability against the dark background
+// and from each other; alpha=1 keeps each lane crisp.
++ (simd_float4)stemColorForIndex:(int)idx name:(NSString*)name {
+    NSString* n = name.lowercaseString;
+    if ([n containsString:@"vocal"])  return (simd_float4){0.96f, 0.55f, 0.78f, 1.0f};
+    if ([n containsString:@"drum"])   return (simd_float4){1.00f, 0.55f, 0.30f, 1.0f};
+    if ([n containsString:@"bass"])   return (simd_float4){0.45f, 0.85f, 0.55f, 1.0f};
+    if ([n containsString:@"guitar"]) return (simd_float4){0.95f, 0.85f, 0.40f, 1.0f};
+    if ([n containsString:@"piano"])  return (simd_float4){0.55f, 0.85f, 0.95f, 1.0f};
+    if ([n containsString:@"other"])  return (simd_float4){0.65f, 0.62f, 0.95f, 1.0f};
+    static const simd_float4 fallback[6] = {
+        {0.55f, 0.72f, 0.88f, 1.0f},
+        {0.96f, 0.55f, 0.78f, 1.0f},
+        {1.00f, 0.55f, 0.30f, 1.0f},
+        {0.45f, 0.85f, 0.55f, 1.0f},
+        {0.95f, 0.85f, 0.40f, 1.0f},
+        {0.65f, 0.62f, 0.95f, 1.0f},
+    };
+    int i = ((idx % 6) + 6) % 6;
+    return fallback[i];
+}
+
++ (NSColor*)nsStemColorForIndex:(int)idx name:(NSString*)name {
+    simd_float4 c = [self stemColorForIndex:idx name:name];
+    return [NSColor colorWithRed:c.x green:c.y blue:c.z alpha:c.w];
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
@@ -405,15 +521,36 @@ typedef NS_ENUM(NSInteger, DragMode) {
     [enc setRenderPipelineState:_pso];
 
     std::vector<Vertex> verts;
-    verts.reserve(_peaksMin.size() * 6 + 6);
+    int laneCount = (int)_peaksMin.size();  // 0 when nothing loaded
+    int firstLaneBins = laneCount > 0 ? (int)_peaksMin[0].size() : 0;
+    verts.reserve((size_t)firstLaneBins * 6 * (size_t)std::max(1, laneCount) + 64);
 
     const double span = std::max(1e-9, _viewEnd - _viewStart);
 
     // Waveform bars: rebin source peaks to ~2 bins per pixel of the visible
-    // window so we never push more triangles than necessary.
-    int bins = static_cast<int>(_peaksMin.size());
-    if (bins > 0) {
-        simd_float4 col = {0.55f, 0.72f, 0.88f, 1.0f};
+    // window so we never push more triangles than necessary. With multi-stem
+    // loads each stem renders into its own horizontal lane carved out of the
+    // [-1, 1] vertical NDC; overlays (loop / playhead / bookmarks) still span
+    // the full height so they stay legible across all lanes.
+    for (int k = 0; k < laneCount; ++k) {
+        int bins = (int)_peaksMin[(size_t)k].size();
+        if (bins <= 0) continue;
+        const std::vector<float>& mins = _peaksMin[(size_t)k];
+        const std::vector<float>& maxs = _peaksMax[(size_t)k];
+
+        NSString* nm = (k < (int)_stemNames.count) ? _stemNames[(NSUInteger)k] : nil;
+        simd_float4 col = [WaveformView stemColorForIndex:k name:nm];
+
+        // Lane y-range in NDC. Top of view is +1, bottom is -1. With a small
+        // inset between lanes so adjacent waveforms don't visually merge.
+        double laneTop    = 1.0 - 2.0 * (double)k       / (double)laneCount;
+        double laneBottom = 1.0 - 2.0 * (double)(k + 1) / (double)laneCount;
+        double inset = (laneCount > 1) ? 0.04 : 0.0;
+        double topInset    = laneTop - inset;
+        double bottomInset = laneBottom + inset;
+        double center = 0.5 * (topInset + bottomInset);
+        double half   = 0.5 * (topInset - bottomInset);  // >0
+
         int firstBin = std::max(0, (int)std::floor(_viewStart * bins));
         int lastBin  = std::min(bins, (int)std::ceil(_viewEnd  * bins));
         int visible = std::max(1, lastBin - firstBin);
@@ -427,8 +564,8 @@ typedef NS_ENUM(NSInteger, DragMode) {
             if (e > lastBin) e = lastBin;
             float yMin = 1.0f, yMax = -1.0f;
             for (int b = s; b < e; ++b) {
-                if (_peaksMin[b] < yMin) yMin = _peaksMin[b];
-                if (_peaksMax[b] > yMax) yMax = _peaksMax[b];
+                if (mins[b] < yMin) yMin = mins[b];
+                if (maxs[b] > yMax) yMax = maxs[b];
             }
             yMax = std::clamp(yMax, -1.0f, 1.0f);
             yMin = std::clamp(yMin, -1.0f, 1.0f);
@@ -437,12 +574,118 @@ typedef NS_ENUM(NSInteger, DragMode) {
             double bx1 = ((double)e / bins - _viewStart) / span;
             float x0 = -1.0f + 2.0f * (float)bx0;
             float x1 = -1.0f + 2.0f * (float)bx1;
-            verts.push_back({{x0, yMin}, col});
-            verts.push_back({{x1, yMin}, col});
-            verts.push_back({{x1, yMax}, col});
-            verts.push_back({{x0, yMin}, col});
-            verts.push_back({{x1, yMax}, col});
-            verts.push_back({{x0, yMax}, col});
+            // Map [-1, 1] sample range into this lane's vertical slot.
+            float lyMin = (float)(center + half * (double)yMin);
+            float lyMax = (float)(center + half * (double)yMax);
+            verts.push_back({{x0, lyMin}, col});
+            verts.push_back({{x1, lyMin}, col});
+            verts.push_back({{x1, lyMax}, col});
+            verts.push_back({{x0, lyMin}, col});
+            verts.push_back({{x1, lyMax}, col});
+            verts.push_back({{x0, lyMax}, col});
+        }
+    }
+
+    // MIDI piano-roll overlay per stem. Drawn between waveform bars and lane
+    // dividers so notes layer on top of the audio peaks but stay below the
+    // structural separator lines / playhead. Pitch range auto-fits per stem
+    // (with a 1-octave minimum) so even a sparse note range fills the lane.
+    double durForMidi = _engine ? _engine->duration() : 0.0;
+    if (_midiNotes.count > 0 && durForMidi > 0.0 && laneCount > 0) {
+        for (int k = 0; k < laneCount; ++k) {
+            NSString* nm = (k < (int)_stemNames.count) ? _stemNames[(NSUInteger)k] : nil;
+            if (!nm) continue;
+            NSArray<NSDictionary*>* notes = _midiNotes[nm];
+            if (notes.count == 0) continue;
+
+            double laneTop    = 1.0 - 2.0 * (double)k       / (double)laneCount;
+            double laneBottom = 1.0 - 2.0 * (double)(k + 1) / (double)laneCount;
+            double inset = (laneCount > 1) ? 0.04 : 0.0;
+            double topInset    = laneTop - inset;
+            double bottomInset = laneBottom + inset;
+            double center = 0.5 * (topInset + bottomInset);
+            double half   = 0.5 * (topInset - bottomInset);
+
+            int pmin = 127, pmax = 0;
+            for (NSDictionary* nd in notes) {
+                int p = [nd[@"pitch"] intValue];
+                if (p < pmin) pmin = p;
+                if (p > pmax) pmax = p;
+            }
+            if (pmin > pmax) continue;
+            // Pad to at least one octave so a song with only a few pitches
+            // doesn't blow each note up to fill the entire lane vertically.
+            if (pmax - pmin < 12) {
+                int mid = (pmin + pmax) / 2;
+                pmin = mid - 6;
+                pmax = mid + 6;
+            }
+            double pSpan = std::max(1.0, (double)(pmax - pmin));
+
+            // 85% of lane height for notes, leaving a margin so they don't
+            // collide with the lane dividers.
+            double useHalf = half * 0.85;
+            // Each pitch row's vertical thickness, slightly less than full
+            // row pitch so adjacent semitones don't visually merge.
+            double rowH = (2.0 * useHalf) / pSpan;
+            double halfH = std::max(0.0008, rowH * 0.40);
+
+            // White-ish notes pop against any stem color while keeping the
+            // pitch bar legible. Velocity modulates alpha so louder notes
+            // read brighter.
+            simd_float4 baseCol = {1.0f, 1.0f, 1.0f, 0.85f};
+
+            for (NSDictionary* nd in notes) {
+                double t0 = [nd[@"start"] doubleValue];
+                double t1 = [nd[@"end"] doubleValue];
+                if (t1 <= t0) continue;
+                int p = [nd[@"pitch"] intValue];
+                double vel = [nd[@"velocity"] doubleValue];
+
+                double f0 = t0 / durForMidi;
+                double f1 = t1 / durForMidi;
+                double xa = (f0 - _viewStart) / span;
+                double xb = (f1 - _viewStart) / span;
+                if (xb < 0.0 || xa > 1.0) continue;
+                xa = std::max(0.0, xa);
+                xb = std::min(1.0, xb);
+                float x0 = -1.0f + 2.0f * (float)xa;
+                float x1 = -1.0f + 2.0f * (float)xb;
+                // Make ultra-short notes still visible: at least 1px wide.
+                float minW = 1.0f / std::max<float>(1.0f, (float)self.drawableSize.width);
+                if (x1 - x0 < minW * 2.0f) x1 = x0 + minW * 2.0f;
+
+                double pf = (double)(p - pmin) / pSpan;  // 0 = lowest, 1 = highest
+                double yc = center + useHalf * (pf * 2.0 - 1.0);
+                float yMin = (float)(yc - halfH);
+                float yMax = (float)(yc + halfH);
+
+                simd_float4 nc = baseCol;
+                nc.w = (float)std::clamp(0.55 + vel * 0.45, 0.5, 1.0);
+
+                verts.push_back({{x0, yMin}, nc});
+                verts.push_back({{x1, yMin}, nc});
+                verts.push_back({{x1, yMax}, nc});
+                verts.push_back({{x0, yMin}, nc});
+                verts.push_back({{x1, yMax}, nc});
+                verts.push_back({{x0, yMax}, nc});
+            }
+        }
+    }
+
+    // Subtle horizontal divider lines between lanes — a 1-px dark band right
+    // at each split makes the lanes feel separated without dominating the eye.
+    if (laneCount > 1) {
+        float lineH = 1.0f / std::max<float>(1.0f, (float)self.drawableSize.height);
+        simd_float4 div = {0.0f, 0.0f, 0.0f, 0.35f};
+        for (int k = 1; k < laneCount; ++k) {
+            float y = (float)(1.0 - 2.0 * (double)k / (double)laneCount);
+            verts.push_back({{-1.0f, y - lineH}, div});
+            verts.push_back({{ 1.0f, y - lineH}, div});
+            verts.push_back({{ 1.0f, y + lineH}, div});
+            verts.push_back({{-1.0f, y - lineH}, div});
+            verts.push_back({{ 1.0f, y + lineH}, div});
+            verts.push_back({{-1.0f, y + lineH}, div});
         }
     }
 

@@ -28,5 +28,13 @@ class AudioEngine;
 @property (nonatomic, strong, readonly) NSButton* smartLoopButton;
 @property (nonatomic, strong, readonly) NSButton* isolateButton;
 
+// Left-of-waveform mixer strip. Empty until populated by the app delegate.
+// Subviews placed directly here are laid out as N equal-height rows, top-down,
+// matching the per-stem lane layout in the waveform view.
+@property (nonatomic, strong, readonly) NSView* stemSidebar;
+
+// Show/hide the sidebar; when shown the waveform shrinks to make room.
+- (void)setStemSidebarVisible:(BOOL)visible;
+
 - (void)updatePlayPauseButton:(BOOL)playing;
 @end

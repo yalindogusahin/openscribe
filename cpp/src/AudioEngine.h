@@ -99,6 +99,14 @@ public:
     const float* samplesPtr() const { return mixedWaveform_.data(); }
     int64_t frameCount() const { return totalFrames_; }
 
+    // Per-stem read-only view. Returns nullptr when index is out of range or
+    // nothing is loaded. Stable as long as no load()/loadStems() runs.
+    // Interleaved stereo float32 [L, R, L, R, ...], frameCount() frames long.
+    const float* stemSamplesPtr(int index) const {
+        if (index < 0 || index >= stemCount_) return nullptr;
+        return stemSamples_[(size_t)index].data();
+    }
+
 private:
     static OSStatus sourceCallback(void* inRefCon,
                                    AudioUnitRenderActionFlags* ioActionFlags,

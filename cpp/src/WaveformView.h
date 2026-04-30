@@ -23,4 +23,20 @@ class AudioEngine;
 - (void)setViewStart:(double)start end:(double)end;
 
 @property (nonatomic, copy) void (^fileDropHandler)(NSString* path);
+
+// Stem name array for label overlays (one per lane). Pass nil/empty to revert
+// to single-waveform mode. Triggers a peak recompute + redraw.
+- (void)setStemNames:(NSArray<NSString*>*)names;
+
+// Color used for the lane at `idx` (0-based). Falls back to a palette when
+// `name` doesn't match a known stem. Exposed so other UI (sidebar mixer)
+// can tint labels to match the waveform lanes.
++ (NSColor*)nsStemColorForIndex:(int)idx name:(NSString*)name;
+
+// MIDI piano-roll overlay. Notes are drawn inside the matching stem's lane,
+// pitch-mapped to the lane's vertical extent (auto-fit per stem). `notes` is
+// an array of dicts with keys: "start" (sec), "end" (sec), "pitch" (MIDI 0..127),
+// "velocity" (0..1). Pass nil/empty array to clear notes for that stem.
+- (void)setMIDINotes:(NSArray<NSDictionary*>*)notes forStemName:(NSString*)stemName;
+- (void)clearAllMIDINotes;
 @end
