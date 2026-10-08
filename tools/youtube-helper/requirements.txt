@@ -1,0 +1,5 @@
+# OpenScribe youtube-helper runtime deps. yt-dlp ships extractor logic for
+# every YouTube edge case (age gate, throttling, signature ciphers, etc.) —
+# pinning loosely keeps us current on those without needing app updates.
+# Include the matching JavaScript challenge solver, required by YouTube.
+yt-dlp[default]>=2026.8.19

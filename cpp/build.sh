@@ -20,6 +20,8 @@ clang++ -std=c++20 -fobjc-arc \
     -O2 -Wall -Wextra \
     -mmacosx-version-min=13.0 \
     -framework Cocoa \
+    -framework PDFKit \
+    -framework UniformTypeIdentifiers \
     -framework AudioToolbox \
     -framework CoreAudio \
     -framework AVFoundation \
@@ -31,18 +33,30 @@ clang++ -std=c++20 -fobjc-arc \
     src/main.mm \
     src/AppDelegate.mm \
     src/MainWindow.mm \
+    src/IRealLibrary.mm \
     src/AudioEngine.mm \
     src/WaveformView.mm \
     src/TimelineRulerView.mm \
     src/SettingsWindowController.mm \
     src/StemSeparator.mm \
+    src/BasicPitchTranscriber.mm \
+    src/ChordRecognizer.mm \
+    src/YouTubeDownloader.mm \
     -o "build/$EXE_NAME"
 
 echo "Bundling..."
-rm -rf "$BUNDLE"
+# Preserve Resources/{python,stem-helper,youtube-helper,torch_cache,...}
+# across rebuilds so a UI-only iteration doesn't trigger re-running
+# bundle_helper.sh (which re-downloads ~760 MB of ML models). Only the
+# executable, shaders, icon, and Info.plist need refreshing.
 mkdir -p "$BUNDLE/Contents/MacOS"
 mkdir -p "$BUNDLE/Contents/Resources"
+rm -f "$BUNDLE/Contents/MacOS/$EXE_NAME"
 cp "build/$EXE_NAME" "$BUNDLE/Contents/MacOS/$EXE_NAME"
+mkdir -p "$BUNDLE/Contents/Resources/ireal-helper"
+cp ../tools/ireal-helper/library.py ../tools/ireal-helper/THIRD_PARTY_NOTICES.md "$BUNDLE/Contents/Resources/ireal-helper/"
+mkdir -p "$BUNDLE/Contents/Resources/transcribe-helper"
+cp ../tools/transcribe-helper/transcribe.py "$BUNDLE/Contents/Resources/transcribe-helper/transcribe.py"
 cp build/default.metallib "$BUNDLE/Contents/Resources/default.metallib"
 if [ -f AppIcon.icns ]; then
     cp AppIcon.icns "$BUNDLE/Contents/Resources/AppIcon.icns"
