@@ -167,8 +167,10 @@ for name in ("htdemucs", "htdemucs_6s"):
 # Roformer goes into audio_separator's model dir
 print("  prefetching mel_band_roformer (BS-Roformer)...", flush=True)
 from audio_separator.separator import Separator
-sep = Separator(output_dir="/tmp", model_file_dir=asep_dir)
-sep.load_model(model_filename="model_bs_roformer_ep_317_sdr_12.9755.ckpt")
+# Packaging needs the files, not a running inference model. Avoid MPS
+# initialization on GitHub's virtualized Apple Silicon runners.
+sep = Separator(output_dir="/tmp", model_file_dir=asep_dir, info_only=True)
+sep.download_model_and_data(model_filename="model_bs_roformer_ep_317_sdr_12.9755.ckpt")
 PY
 
 # Move cached models into the bundle (rsync handles existing dirs).
