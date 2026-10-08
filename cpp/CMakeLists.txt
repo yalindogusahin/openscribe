@@ -10,6 +10,7 @@ set(SOURCES
     src/main.mm
     src/AppDelegate.mm
     src/MainWindow.mm
+    src/IRealLibrary.mm
 )
 
 add_executable(OpenScribeNative MACOSX_BUNDLE ${SOURCES})
@@ -24,6 +25,8 @@ set_target_properties(OpenScribeNative PROPERTIES
 
 target_link_libraries(OpenScribeNative PRIVATE
     "-framework Cocoa"
+    "-framework PDFKit"
+    "-framework UniformTypeIdentifiers"
     "-framework AudioToolbox"
     "-framework CoreAudio"
     "-framework AVFoundation"

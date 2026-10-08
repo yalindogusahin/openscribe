@@ -35,3 +35,8 @@ xcuserdata/
 
 # Local-only scripts (personal helpers, not part of the project)
 scripts/local/
+
+# Python helper environments and bytecode
+**/venv/
+__pycache__/
+*.py[cod]

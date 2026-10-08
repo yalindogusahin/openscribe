@@ -84,17 +84,44 @@ echo "Installing dependencies (this can take 3-5 minutes)..."
     torch \
     numpy \
     soundfile \
-    tqdm
+    tqdm \
+    -r ../tools/media-helper/requirements.txt \
+    "basic-pitch[onnx]==0.4.0"
 
-# 5. Copy the helper script.
+# 5. Copy the helper scripts. media-helper reuses the shared site-packages
+#    (its MediaDownloader falls back to stem-helper/site-packages when its
+#    own dir doesn't have one), so we only ship its download.py.
 cp ../tools/stem-helper/separate.py "$HELPER_DIR/separate.py"
+
+MEDIA_HELPER_DIR="$RES/media-helper"
+rm -rf "$MEDIA_HELPER_DIR"
+mkdir -p "$MEDIA_HELPER_DIR"
+cp ../tools/media-helper/download.py "$MEDIA_HELPER_DIR/download.py"
+
+# transcribe-helper reuses the shared site-packages (basic-pitch is
+# installed there alongside the stem deps), so we only ship its script.
+TR_HELPER_DIR="$RES/transcribe-helper"
+rm -rf "$TR_HELPER_DIR"
+mkdir -p "$TR_HELPER_DIR"
+cp ../tools/transcribe-helper/transcribe.py "$TR_HELPER_DIR/transcribe.py"
+
+# chord-helper reuses the shared site-packages too (librosa/numpy/scipy are
+# installed there for audio-separator), so we only ship its script.
+CHORD_HELPER_DIR="$RES/chord-helper"
+rm -rf "$CHORD_HELPER_DIR"
+mkdir -p "$CHORD_HELPER_DIR"
+cp ../tools/chord-helper/chord.py "$CHORD_HELPER_DIR/chord.py"
 
 # 6. Smoke test the bundled site-packages.
 echo "Smoke-testing helper..."
 PYTHONPATH="$SITE" "$PY" -c "
 from audio_separator.separator import Separator
 import demucs, torch, numpy, soundfile
-print('helper deps OK, torch', torch.__version__)
+import yt_dlp, yt_dlp_ejs
+from basic_pitch.inference import predict, Model
+from basic_pitch import FilenameSuffix, build_icassp_2022_model_path
+Model(build_icassp_2022_model_path(FilenameSuffix.onnx))
+print('helper deps OK, torch', torch.__version__, 'yt-dlp', yt_dlp.version.__version__)
 "
 
 # 7. Pre-download stem-separation models into the bundle. Cached in
@@ -149,4 +176,6 @@ echo ""
 echo "Done. Bundle size:"
 du -sh "$BUNDLE"
 echo ""
-echo "Helper at: $BUNDLE/Contents/Resources/stem-helper/"
+echo "Helpers at:"
+echo "  $BUNDLE/Contents/Resources/stem-helper/"
+echo "  $BUNDLE/Contents/Resources/media-helper/"
