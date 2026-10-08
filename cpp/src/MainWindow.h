@@ -39,6 +39,7 @@ class AudioEngine;
 @property (nonatomic, strong, readonly) NSButton* skipForwardButton;
 
 @property (nonatomic, strong, readonly) NSTextField* loopBadge;
+@property (nonatomic, strong, readonly) NSTextField* chordBadge;
 @property (nonatomic, strong, readonly) NSButton* helpButton;
 @property (nonatomic, strong, readonly) NSButton* smartLoopButton;
 @property (nonatomic, strong, readonly) NSButton* isolateButton;
@@ -55,6 +56,11 @@ class AudioEngine;
 // Indices refer to the sidebar's row order (0 = topmost). Caller is expected
 // to permute the engine + waveform peaks to match.
 - (void)setStemReorderHandler:(void (^)(NSInteger from, NSInteger to))handler;
+
+- (void)toggleSheetMusic:(id)sender;
+- (void)openSheetMusic:(id)sender;
+- (void)showIRealLibrary:(id)sender;
+- (void)setSheetMusicAudioPath:(NSString*)path;
 
 - (void)updatePlayPauseButton:(BOOL)playing;
 @end

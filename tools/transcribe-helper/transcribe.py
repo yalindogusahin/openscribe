@@ -55,7 +55,8 @@ def main() -> int:
     # Basic Pitch's CoreML / ONNX backends ship the model weights inside the
     # installed package, so no separate model download or cache management.
     try:
-        from basic_pitch.inference import predict
+        from basic_pitch.inference import predict, Model
+        from basic_pitch import FilenameSuffix, build_icassp_2022_model_path
     except Exception as e:
         print(f"error: basic-pitch not installed: {e}", file=sys.stderr)
         return 3
@@ -76,8 +77,13 @@ def main() -> int:
             # predict() returns (model_output_dict, pretty_midi.PrettyMIDI,
             # note_events). Single inference call — no per-frame hook to
             # report finer-grained progress.
+            # Use the bundled ONNX model explicitly. The shared stem runtime
+            # already includes ONNX; avoid selecting an incompatible CoreML
+            # or TensorFlow runtime merely because it happens to be installed.
+            model = Model(build_icassp_2022_model_path(FilenameSuffix.onnx))
             _, midi_data, note_events = predict(
                 str(in_path),
+                model_or_model_path=model,
                 onset_threshold=args.onset_threshold,
                 frame_threshold=args.frame_threshold,
                 minimum_note_length=args.minimum_note_length_ms,

@@ -17,6 +17,14 @@ class AudioEngine;
 @property (nonatomic, copy) void (^bookmarkRenameHandler)(NSInteger index);
 @property (nonatomic, copy) void (^bookmarkRemoveHandler)(NSInteger index);
 
+// Timed chord lane and its editing actions.
+@property (nonatomic, copy) void (^chordSeekHandler)(double seconds);
+@property (nonatomic, copy) void (^chordEditHandler)(NSInteger index);
+@property (nonatomic, copy) void (^chordDeleteHandler)(NSInteger index);
+@property (nonatomic, copy) void (^chordAddHandler)(double seconds);
+- (void)setChords:(NSArray<NSDictionary*>*)chords;
+- (void)updateChordPlayhead:(double)seconds;
+
 // View window accessors (fraction of duration, 0..1).
 - (double)viewStart;
 - (double)viewEnd;

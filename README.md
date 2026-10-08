@@ -9,11 +9,15 @@ A free, open-source music transcription tool for macOS — built as an alternati
 
 ## Features
 
+- **Audio to MIDI** — `Analyze → Transcribe Track to MIDI…` (⇧⌘M) transcribes the loaded track with Spotify Basic Pitch and overlays detected notes on its waveform. Separated stems also offer “Transcribe to MIDI…” in their context menu. Pitched instruments work best; dense mixes and percussion may produce inaccurate notes.
 - **Waveform visualizer** — see the full audio waveform at a glance
 - **Mouse-driven loop selection** — drag to select any region, press Escape to clear
 - **Pitch-preserving speed control** — slow down to 0.25× without changing the pitch
 - **Pitch shifting** — transpose ±12 semitones independently of speed
 - **Broad format support** — MP3, WAV, FLAC, AIFF, M4A / AAC
+- **Media URL import** — paste a URL (`File → Import Media URL…`, ⇧⌘O) and the audio is downloaded and loaded into the editor
+- **Sheet music panel** — open a PDF or image with `File → Open Sheet Music…` to read beside the waveform; zoom, fit the page, and reopen the same sheet when returning to a song.
+- **iReal chord library** — `File → Browse iReal Library…` searches the popular iReal playlists and opens a selected chart beside the audio. Includes Jazz, Brazilian, Latin, Blues, Pop and Country collections, with source links and an Update Lists button.
 
 ## Requirements
 
@@ -34,6 +38,7 @@ Grab the latest `.zip` from the [Releases](../../releases) page, unzip, and move
 git clone https://github.com/yalindogusahin/openscribe.git
 cd openscribe
 bash cpp/build.sh 1.0.0
+bash cpp/bundle_helper.sh # first build: bundle Python, ML dependencies and models
 open cpp/OpenScribeNative.app
 ```
 

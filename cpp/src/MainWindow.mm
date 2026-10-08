@@ -1,6 +1,9 @@
 #import "MainWindow.h"
+#import "IRealLibrary.h"
 #import "WaveformView.h"
 #import <QuartzCore/QuartzCore.h>
+#import <PDFKit/PDFKit.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 @implementation OSResettableSlider
 - (instancetype)initWithFrame:(NSRect)frame {
@@ -138,7 +141,39 @@
 }
 @end
 
+@interface OSScoreDivider : NSView
+@property (nonatomic, copy) void (^dragHandler)(CGFloat delta);
+@end
+@implementation OSScoreDivider
+- (void)resetCursorRects { [self addCursorRect:self.bounds cursor:NSCursor.resizeLeftRightCursor]; }
+- (void)drawRect:(NSRect)dirtyRect {
+    (void)dirtyRect;
+    [NSColor.separatorColor setFill];
+    NSRectFill(NSMakeRect(NSMidX(self.bounds) - 1, NSMidY(self.bounds) - 22, 2, 44));
+}
+- (void)mouseDown:(NSEvent*)event {
+    CGFloat lastX = event.locationInWindow.x;
+    for (;;) {
+        NSEvent* next = [self.window nextEventMatchingMask:NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp];
+        if (!next || next.type == NSEventTypeLeftMouseUp) break;
+        CGFloat delta = next.locationInWindow.x - lastX;
+        lastX = next.locationInWindow.x;
+        if (self.dragHandler) self.dragHandler(delta);
+    }
+}
+@end
+
 @interface MainWindow ()
+@property (nonatomic, strong) IRealLibrary* irealLibrary;
+@property (nonatomic, strong) NSView* scorePanel;
+@property (nonatomic, strong) OSScoreDivider* scoreDivider;
+@property (nonatomic, strong) NSSlider* scoreZoomSlider;
+@property (nonatomic, strong) NSTextField* scoreZoomLabel;
+@property (nonatomic) CGFloat preferredScoreWidth;
+@property (nonatomic, strong) PDFView* scoreView;
+@property (nonatomic, strong) NSTextField* scoreTitle;
+@property (nonatomic, strong) NSButton* scoreButton;
+@property (nonatomic, copy) NSString* scoreAudioPath;
 @property (nonatomic, strong, readwrite) WaveformView* waveformView;
 @property (nonatomic, strong, readwrite) NSView* stemSidebar;
 @property (nonatomic, strong, readwrite) NSTextField* timeLabel;
@@ -157,6 +192,7 @@
 @property (nonatomic, strong, readwrite) NSButton* playPauseButton;
 @property (nonatomic, strong, readwrite) NSButton* skipForwardButton;
 @property (nonatomic, strong, readwrite) NSTextField* loopBadge;
+@property (nonatomic, strong, readwrite) NSTextField* chordBadge;
 @property (nonatomic, strong, readwrite) NSButton* helpButton;
 @property (nonatomic, strong, readwrite) NSButton* smartLoopButton;
 @property (nonatomic, strong, readwrite) NSButton* isolateButton;
@@ -243,6 +279,7 @@ static NSButton* makeIconButton(NSRect frame, NSString* symbol, CGFloat pointSiz
     [self setTitle:@"OpenScribe Native"];
     [self center];
     self.releasedWhenClosed = NO;
+    self.contentMinSize = NSMakeSize(960, 500);
     self.contentView.wantsLayer = YES;
     // Cooler graphite — slight bluish cast reads as "pro audio app" vs.
     // neutral gray.
@@ -491,6 +528,17 @@ static NSButton* makeIconButton(NSRect frame, NSString* symbol, CGFloat pointSiz
     self.isolateButton.autoresizingMask = NSViewMaxXMargin | NSViewMaxYMargin;
     [self.contentView addSubview:self.isolateButton];
 
+    self.scoreButton = makeIconButton(
+        NSMakeRect(margin + 3 * (iconSize + 8),
+                   transportY + (transportRowH - iconSize)/2, iconSize, iconSize),
+        @"doc.richtext", 16);
+    self.scoreButton.toolTip = @"Show / hide sheet music";
+    [self.scoreButton setAccessibilityLabel:@"Sheet music"];
+    self.scoreButton.target = self;
+    self.scoreButton.action = @selector(toggleSheetMusic:);
+    self.scoreButton.autoresizingMask = NSViewMaxXMargin | NSViewMaxYMargin;
+    [self.contentView addSubview:self.scoreButton];
+
     // Waveform fills everything above the transport row.
     CGFloat waveBottom = transportY + transportRowH + gap;
     CGFloat waveTotalW = bounds.size.width - 2 * margin;
@@ -576,7 +624,239 @@ static NSButton* makeIconButton(NSRect frame, NSString* symbol, CGFloat pointSiz
 
     [self.contentView addSubview:self.dropHintContainer];
 
+    self.chordBadge = makeLabel(NSMakeRect(10, 12, 220, 22), @"", NSTextAlignmentLeft);
+    self.chordBadge.font = [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold];
+    self.chordBadge.textColor = NSColor.whiteColor;
+    self.chordBadge.hidden = YES;
+    self.chordBadge.autoresizingMask = NSViewMaxXMargin | NSViewMaxYMargin;
+    [self.waveformView addSubview:self.chordBadge];
+    // Keep the existing loop pill above the chord lane when both are visible.
+    NSRect loopFrame = self.loopBadge.frame;
+    loopFrame.origin.y += 64;
+    self.loopBadge.frame = loopFrame;
+    [self buildScorePanel];
     return self;
+}
+
+- (void)buildScorePanel {
+    NSRect wave = self.waveformView.frame;
+    CGFloat width = 360;
+    self.preferredScoreWidth = width;
+    self.scorePanel = [[NSView alloc] initWithFrame:
+        NSMakeRect(NSMaxX(wave) - width, wave.origin.y, width, wave.size.height)];
+    self.scorePanel.autoresizingMask = NSViewMinXMargin | NSViewHeightSizable;
+    self.scorePanel.wantsLayer = YES;
+    self.scorePanel.layer.backgroundColor = NSColor.windowBackgroundColor.CGColor;
+    self.scorePanel.layer.cornerRadius = 6;
+    self.scorePanel.layer.masksToBounds = YES;
+    self.scorePanel.hidden = YES;
+    [self.contentView addSubview:self.scorePanel];
+
+    CGFloat height = wave.size.height;
+    self.scoreTitle = makeLabel(NSMakeRect(12, height - 30, width - 54, 20),
+                               @"Sheet Music", NSTextAlignmentLeft);
+    self.scoreTitle.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
+    self.scoreTitle.textColor = NSColor.labelColor;
+    self.scoreTitle.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    self.scoreTitle.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+    [self.scorePanel addSubview:self.scoreTitle];
+    NSButton* close = makeIconButton(NSMakeRect(width - 32, height - 30, 22, 22), @"xmark", 12);
+    close.contentTintColor = NSColor.labelColor;
+    close.target = self;
+    close.action = @selector(toggleSheetMusic:);
+    close.toolTip = @"Hide sheet music";
+    [close setAccessibilityLabel:close.toolTip];
+    close.autoresizingMask = NSViewMinXMargin | NSViewMinYMargin;
+    [self.scorePanel addSubview:close];
+
+    self.scoreView = [[PDFView alloc] initWithFrame:NSMakeRect(0, 76, width, height - 114)];
+    self.scoreView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    self.scoreView.autoScales = YES;
+    self.scoreView.displayMode = kPDFDisplaySinglePageContinuous;
+    self.scoreView.backgroundColor = [NSColor colorWithWhite:0.18 alpha:1];
+    [self.scorePanel addSubview:self.scoreView];
+    self.scoreZoomSlider = [NSSlider sliderWithValue:100 minValue:10 maxValue:400 target:self action:@selector(scoreZoomChanged:)];
+    self.scoreZoomSlider.frame = NSMakeRect(16, 42, width - 88, 24);
+    self.scoreZoomSlider.continuous = YES;
+    self.scoreZoomSlider.autoresizingMask = NSViewWidthSizable | NSViewMaxYMargin;
+    self.scoreZoomSlider.toolTip = @"PDF zoom";
+    [self.scoreZoomSlider setAccessibilityLabel:@"PDF zoom percentage"];
+    [self.scorePanel addSubview:self.scoreZoomSlider];
+    self.scoreZoomLabel = makeLabel(NSMakeRect(width - 68, 44, 56, 20), @"100%", NSTextAlignmentRight);
+    self.scoreZoomLabel.textColor = NSColor.labelColor;
+    self.scoreZoomLabel.autoresizingMask = NSViewMinXMargin | NSViewMaxYMargin;
+    [self.scorePanel addSubview:self.scoreZoomLabel];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(scoreScaleChanged:)
+        name:PDFViewScaleChangedNotification object:self.scoreView];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(scoreWindowResized:)
+        name:NSWindowDidResizeNotification object:self];
+    self.scoreDivider = [[OSScoreDivider alloc] initWithFrame:NSZeroRect];
+    self.scoreDivider.hidden = YES;
+    self.scoreDivider.toolTip = @"Drag to resize sheet music";
+    [self.scoreDivider setAccessibilityLabel:@"Resize sheet music panel"];
+    __weak MainWindow* weakWindow = self;
+    self.scoreDivider.dragHandler = ^(CGFloat delta) {
+        MainWindow* window = weakWindow;
+        window.preferredScoreWidth = window.scorePanel.frame.size.width - delta;
+        [window layoutScorePanel];
+    };
+    [self.contentView addSubview:self.scoreDivider];
+
+    NSButton* libraryButton = [NSButton buttonWithTitle:@"Library…" target:self action:@selector(showIRealLibrary:)];
+    libraryButton.frame = NSMakeRect(100, 8, 80, 26);
+    libraryButton.toolTip = @"Choose an iReal chord chart";
+    [self.scorePanel addSubview:libraryButton];
+    NSArray* titles = @[@"Open…", @"−", @"+", @"Fit"];
+    SEL actions[] = {@selector(openSheetMusic:), @selector(scoreZoomOut:),
+                     @selector(scoreZoomIn:), @selector(scoreFit:)};
+    CGFloat positions[] = {10, 180, 226, 272};
+    CGFloat widths[] = {90, 40, 40, 76};
+    for (NSUInteger i = 0; i < titles.count; ++i) {
+        NSButton* button = [NSButton buttonWithTitle:titles[i] target:self action:actions[i]];
+        button.frame = NSMakeRect(positions[i], 8, widths[i], 26);
+        button.autoresizingMask = (i == 0 ? NSViewMaxXMargin : NSViewMinXMargin) | NSViewMaxYMargin;
+        button.toolTip = (@[@"Open a PDF or image", @"Zoom out", @"Zoom in", @"Fit page"])[i];
+        [button setAccessibilityLabel:button.toolTip];
+        [self.scorePanel addSubview:button];
+    }
+}
+
+- (void)layoutScorePanel {
+    NSRect wave = self.waveformView.frame;
+    CGFloat right = self.contentView.bounds.size.width - 20;
+    if (self.scorePanel.hidden) {
+        wave.size.width = right - wave.origin.x;
+    } else {
+        CGFloat maximum = MAX(360, right - wave.origin.x - 312);
+        CGFloat width = MIN(MAX(360, self.preferredScoreWidth), maximum);
+        self.scorePanel.frame = NSMakeRect(right - width, wave.origin.y, width, wave.size.height);
+        self.scoreDivider.frame = NSMakeRect(right - width - 12, wave.origin.y, 12, wave.size.height);
+        wave.size.width = right - width - 12 - wave.origin.x;
+    }
+    self.waveformView.frame = wave;
+    self.scoreDivider.hidden = self.scorePanel.hidden;
+    NSRect hint = self.dropHintContainer.frame;
+    hint.origin.x = NSMidX(wave) - hint.size.width / 2;
+    self.dropHintContainer.frame = hint;
+    [self invalidateCursorRectsForView:self.scoreDivider];
+}
+
+- (void)scoreWindowResized:(NSNotification*)notification {
+    (void)notification;
+    [self layoutScorePanel];
+}
+
+- (void)toggleSheetMusic:(id)sender {
+    (void)sender;
+    self.scorePanel.hidden = !self.scorePanel.hidden;
+    [self layoutScorePanel];
+    self.scoreButton.contentTintColor = self.scorePanel.hidden ? NSColor.labelColor : NSColor.controlAccentColor;
+    [self makeFirstResponder:self.waveformView];
+}
+
+- (void)scoreScaleChanged:(NSNotification*)notification {
+    (void)notification;
+    double percent = self.scoreView.scaleFactor * 100;
+    self.scoreZoomSlider.doubleValue = percent;
+    self.scoreZoomLabel.stringValue = [NSString stringWithFormat:@"%.0f%%", percent];
+    self.scoreZoomSlider.enabled = self.scoreView.document != nil;
+}
+
+- (void)setScoreScale:(CGFloat)scale {
+    if (!self.scoreView.document) return;
+    self.scoreView.autoScales = NO;
+    self.scoreView.minScaleFactor = 0.1;
+    self.scoreView.maxScaleFactor = 4.0;
+    self.scoreView.scaleFactor = MIN(4.0, MAX(0.1, scale));
+    [self scoreScaleChanged:nil];
+}
+- (void)scoreZoomChanged:(NSSlider*)sender { [self setScoreScale:sender.doubleValue / 100]; }
+- (void)scoreZoomIn:(id)sender { (void)sender; [self setScoreScale:self.scoreView.scaleFactor * 1.25]; }
+- (void)scoreZoomOut:(id)sender { (void)sender; [self setScoreScale:self.scoreView.scaleFactor / 1.25]; }
+- (void)scoreFit:(id)sender {
+    (void)sender;
+    self.scoreView.autoScales = YES;
+    [self scoreScaleChanged:nil];
+}
+
+- (BOOL)loadSheetMusicURL:(NSURL*)url {
+    PDFDocument* document = [[PDFDocument alloc] initWithURL:url];
+    if (!document) {
+        NSImage* image = [[NSImage alloc] initWithContentsOfURL:url];
+        PDFPage* page = image ? [[PDFPage alloc] initWithImage:image] : nil;
+        if (page) {
+            document = [[PDFDocument alloc] init];
+            [document insertPage:page atIndex:0];
+        }
+    }
+    if (!document || document.isLocked || document.pageCount == 0) return NO;
+    self.scoreView.document = document;
+    self.scoreView.autoScales = YES;
+    [self scoreScaleChanged:nil];
+    self.scoreTitle.stringValue = url.lastPathComponent;
+    self.scoreTitle.toolTip = url.path;
+    return YES;
+}
+
+- (void)showIRealLibrary:(id)sender {
+    (void)sender;
+    if (!self.irealLibrary) {
+        self.irealLibrary = [[IRealLibrary alloc] init];
+        __weak MainWindow* weakSelf = self;
+        self.irealLibrary.selectionHandler = ^(NSURL* url) {
+            MainWindow* window = weakSelf;
+            if ([window loadSheetMusicURL:url]) {
+                [window rememberSheetMusicURL:url];
+                if (window.scorePanel.hidden) [window toggleSheetMusic:nil];
+                [window makeKeyAndOrderFront:nil];
+                [window makeFirstResponder:window.waveformView];
+            }
+        };
+    }
+    [self.irealLibrary showLibrary];
+}
+
+- (void)rememberSheetMusicURL:(NSURL*)url {
+    if (self.scoreAudioPath.length) {
+        [[NSUserDefaults standardUserDefaults] setObject:url.path
+            forKey:[@"openscribe.score." stringByAppendingString:self.scoreAudioPath]];
+    }
+}
+
+- (void)openSheetMusic:(id)sender {
+    (void)sender;
+    NSOpenPanel* panel = [NSOpenPanel openPanel];
+    panel.allowedContentTypes = @[UTTypePDF, UTTypeImage];
+    panel.allowsMultipleSelection = NO;
+    panel.canChooseDirectories = NO;
+    panel.message = @"Choose a lead sheet or Real Book page (PDF or image).";
+    [panel beginSheetModalForWindow:self completionHandler:^(NSModalResponse result) {
+        if (result != NSModalResponseOK) return;
+        if (![self loadSheetMusicURL:panel.URL]) {
+            NSAlert* alert = [[NSAlert alloc] init];
+            alert.messageText = @"Could not open sheet music";
+            alert.informativeText = @"Choose a readable PDF without a password, or an image file.";
+            [alert beginSheetModalForWindow:self completionHandler:nil];
+            return;
+        }
+        [self rememberSheetMusicURL:panel.URL];
+        if (self.scorePanel.hidden) [self toggleSheetMusic:nil];
+        [self makeFirstResponder:self.waveformView];
+    }];
+}
+
+- (void)setSheetMusicAudioPath:(NSString*)path {
+    if ([self.scoreAudioPath isEqualToString:path]) return;
+    self.scoreAudioPath = path;
+    self.scoreView.document = nil;
+    [self scoreScaleChanged:nil];
+    self.scoreTitle.stringValue = @"Sheet Music — Open a PDF or image";
+    self.scoreTitle.toolTip = nil;
+    NSString* saved = path.length ? [[NSUserDefaults standardUserDefaults]
+        stringForKey:[@"openscribe.score." stringByAppendingString:path]] : nil;
+    if (saved && [self loadSheetMusicURL:[NSURL fileURLWithPath:saved]]) {
+        if (self.scorePanel.hidden) [self toggleSheetMusic:nil];
+    }
 }
 
 - (void)noResponderFor:(SEL)eventSelector {
@@ -610,6 +890,7 @@ static NSButton* makeIconButton(NSRect frame, NSString* symbol, CGFloat pointSiz
     self.waveformView.frame = wf;
 
     [self.stemSidebar resizeSubviewsWithOldSize:sf.size];
+    [self layoutScorePanel];
 }
 
 - (void)setStemReorderHandler:(void (^)(NSInteger from, NSInteger to))handler {

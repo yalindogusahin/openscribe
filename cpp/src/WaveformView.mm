@@ -193,6 +193,77 @@ typedef NS_ENUM(NSInteger, DragMode) {
 }
 @end
 
+// A lightweight AppKit overlay keeps chord labels and editing accessible
+// while the audio waveform itself is rendered by Metal.
+@interface OSChordLane : NSView
+@property (nonatomic, weak) WaveformView* host;
+@property (nonatomic, copy) NSArray<NSDictionary*>* chords;
+@property (nonatomic) double startTime;
+@property (nonatomic) double endTime;
+@property (nonatomic) double playhead;
+@end
+
+@implementation OSChordLane
+- (double)secondsAtX:(CGFloat)x {
+    return self.startTime + (self.endTime - self.startTime)
+        * std::clamp<double>(x / std::max<CGFloat>(1, self.bounds.size.width), 0, 1);
+}
+- (NSInteger)indexAtTime:(double)t {
+    for (NSUInteger i = 0; i < self.chords.count; ++i) {
+        NSDictionary* chord = self.chords[i];
+        if (t >= [chord[@"start"] doubleValue] && t < [chord[@"end"] doubleValue]) return i;
+    }
+    return NSNotFound;
+}
+- (void)drawRect:(NSRect)dirtyRect {
+    (void)dirtyRect;
+    double span = self.endTime - self.startTime;
+    if (span <= 0) return;
+    [[NSColor colorWithWhite:0.08 alpha:0.95] setFill];
+    NSRectFill(self.bounds);
+    for (NSDictionary* chord in self.chords) {
+        double start = [chord[@"start"] doubleValue], end = [chord[@"end"] doubleValue];
+        CGFloat left = std::max<double>(0, (start - self.startTime) / span * self.bounds.size.width);
+        CGFloat right = std::min<double>(self.bounds.size.width, (end - self.startTime) / span * self.bounds.size.width);
+        if (right <= left) continue;
+        BOOL active = self.playhead >= start && self.playhead < end;
+        [(active ? NSColor.controlAccentColor : [NSColor colorWithWhite:0.24 alpha:1]) setFill];
+        NSRect cell = NSMakeRect(left, 1, std::max<CGFloat>(1, right - left - 1), self.bounds.size.height - 2);
+        [[NSBezierPath bezierPathWithRoundedRect:cell xRadius:3 yRadius:3] fill];
+        NSMutableParagraphStyle* style = [[NSMutableParagraphStyle alloc] init];
+        style.lineBreakMode = NSLineBreakByTruncatingTail;
+        [chord[@"label"] drawInRect:NSInsetRect(cell, 4, 4) withAttributes:@{
+            NSFontAttributeName: [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold],
+            NSForegroundColorAttributeName: NSColor.whiteColor,
+            NSParagraphStyleAttributeName: style}];
+    }
+}
+- (void)mouseDown:(NSEvent*)event {
+    double t = [self secondsAtX:[self convertPoint:event.locationInWindow fromView:nil].x];
+    NSInteger index = [self indexAtTime:t];
+    if (event.clickCount >= 2 && index != NSNotFound && self.host.chordEditHandler) {
+        self.host.chordEditHandler(index);
+    } else if (self.host.chordSeekHandler) self.host.chordSeekHandler(t);
+}
+- (NSMenu*)menuForEvent:(NSEvent*)event {
+    double t = [self secondsAtX:[self convertPoint:event.locationInWindow fromView:nil].x];
+    NSInteger index = [self indexAtTime:t];
+    NSMenu* menu = [[NSMenu alloc] initWithTitle:@"Chords"];
+    if (index != NSNotFound) {
+        NSMenuItem* edit = [menu addItemWithTitle:@"Edit Chord…" action:@selector(editChord:) keyEquivalent:@""];
+        edit.target = self; edit.tag = index;
+        NSMenuItem* remove = [menu addItemWithTitle:@"Delete Chord" action:@selector(deleteChord:) keyEquivalent:@""];
+        remove.target = self; remove.tag = index;
+    }
+    NSMenuItem* add = [menu addItemWithTitle:@"Add Chord…" action:@selector(addChord:) keyEquivalent:@""];
+    add.target = self; add.representedObject = @(t);
+    return menu;
+}
+- (void)editChord:(NSMenuItem*)item { if (self.host.chordEditHandler) self.host.chordEditHandler(item.tag); }
+- (void)deleteChord:(NSMenuItem*)item { if (self.host.chordDeleteHandler) self.host.chordDeleteHandler(item.tag); }
+- (void)addChord:(NSMenuItem*)item { if (self.host.chordAddHandler) self.host.chordAddHandler([item.representedObject doubleValue]); }
+@end
+
 @interface WaveformView () {
     AudioEngine* _engine;
     id<MTLDevice> _device;
@@ -222,6 +293,7 @@ typedef NS_ENUM(NSInteger, DragMode) {
     NSArray<NSDictionary*>* _bookmarks;
     BookmarkLabelsView* _bookmarkLabels;
     NSTextField* _zoomLabel;
+    OSChordLane* _chordLane;
 }
 @end
 
@@ -288,8 +360,25 @@ typedef NS_ENUM(NSInteger, DragMode) {
     _stemLabels.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     [self addSubview:_stemLabels positioned:NSWindowBelow relativeTo:_bookmarkLabels];
 
+    _chordLane = [[OSChordLane alloc] initWithFrame:NSMakeRect(0, 40, frame.size.width, 28)];
+    _chordLane.autoresizingMask = NSViewWidthSizable | NSViewMaxYMargin;
+    _chordLane.host = self;
+    _chordLane.hidden = YES;
+    _chordLane.toolTip = @"Click to seek; double-click or right-click to edit chords";
+    [self addSubview:_chordLane];
     [self rebuildTrackingArea];
     return self;
+}
+
+- (void)setChords:(NSArray<NSDictionary*>*)chords {
+    _chordLane.chords = chords ?: @[];
+    _chordLane.hidden = chords.count == 0;
+    [self syncOverlays];
+}
+
+- (void)updateChordPlayhead:(double)seconds {
+    _chordLane.playhead = seconds;
+    [_chordLane setNeedsDisplay:YES];
 }
 
 - (void)setMIDINotes:(NSArray<NSDictionary*>*)notes forStemName:(NSString*)stemName {
@@ -351,6 +440,9 @@ typedef NS_ENUM(NSInteger, DragMode) {
 - (void)syncOverlays {
     double dur = _engine ? _engine->duration() : 0.0;
     [_ruler updateViewStart:_viewStart end:_viewEnd duration:dur];
+    _chordLane.startTime = _viewStart * dur;
+    _chordLane.endTime = _viewEnd * dur;
+    [_chordLane setNeedsDisplay:YES];
     _bookmarkLabels.viewStart = _viewStart;
     _bookmarkLabels.viewEnd = _viewEnd;
     _bookmarkLabels.duration = dur;
@@ -594,6 +686,7 @@ typedef NS_ENUM(NSInteger, DragMode) {
     if (_midiNotes.count > 0 && durForMidi > 0.0 && laneCount > 0) {
         for (int k = 0; k < laneCount; ++k) {
             NSString* nm = (k < (int)_stemNames.count) ? _stemNames[(NSUInteger)k] : nil;
+            if (!nm && laneCount == 1) nm = @"__full_track__";
             if (!nm) continue;
             NSArray<NSDictionary*>* notes = _midiNotes[nm];
             if (notes.count == 0) continue;
