@@ -2290,7 +2290,7 @@ static double hzToSlider(double hz) {
     NSView* content = sheet.contentView;
 
     NSTextField* prompt = [NSTextField labelWithString:
-        @"Paste a YouTube or Instagram link. The audio will be downloaded and loaded into the editor."];
+        @"Paste a supported media link. The audio will be downloaded and loaded into the editor."];
     prompt.font = [NSFont systemFontOfSize:12];
     prompt.frame = NSMakeRect(20, H - 44, W - 40, 32);
     prompt.lineBreakMode = NSLineBreakByWordWrapping;
@@ -2299,7 +2299,7 @@ static double hzToSlider(double hz) {
 
     NSTextField* field = [[NSTextField alloc] initWithFrame:
         NSMakeRect(20, 56, W - 40, 26)];
-    field.placeholderString = @"https://www.youtube.com/watch?v=… or https://www.instagram.com/reel/…";
+    field.placeholderString = @"https://…";
     field.font = [NSFont systemFontOfSize:13];
     field.editable = YES;
     field.selectable = YES;

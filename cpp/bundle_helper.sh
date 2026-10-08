@@ -89,7 +89,21 @@ echo "Installing dependencies (this can take 3-5 minutes)..."
     tqdm \
     -r ../tools/media-helper/requirements.txt \
     "basic-pitch[onnx]==0.4.0" \
-    "setuptools==81.0.0"
+    "setuptools==81.0.0" \
+    "imageio-ffmpeg==0.6.0"
+
+# Ship a portable FFmpeg executable for model setup and runtime decoding.
+mkdir -p "$RES/bin"
+PYTHONPATH="$SITE" "$PY" - "$RES/bin/ffmpeg" <<'PY_FFMPEG'
+import imageio_ffmpeg
+import os
+import shutil
+import sys
+shutil.copy2(imageio_ffmpeg.get_ffmpeg_exe(), sys.argv[1])
+os.chmod(sys.argv[1], 0o755)
+PY_FFMPEG
+export PATH="$(pwd)/$RES/bin:$PATH"
+ffmpeg -version >/dev/null
 
 # 5. Copy the helper scripts. media-helper reuses the shared site-packages
 #    (its MediaDownloader falls back to stem-helper/site-packages when its

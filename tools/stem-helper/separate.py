@@ -19,6 +19,12 @@ import sys
 import time
 from pathlib import Path
 
+# Finder-launched apps do not inherit Homebrew's PATH. Prefer the FFmpeg
+# shipped in Resources/bin so separation works on a clean Mac too.
+_bundled_bin = Path(__file__).resolve().parent.parent / "bin"
+if (_bundled_bin / "ffmpeg").is_file():
+    os.environ["PATH"] = str(_bundled_bin) + os.pathsep + os.environ.get("PATH", "")
+
 
 def _resolve_torch_home() -> None:
     """Pin TORCH_HOME so demucs's model downloads land in a stable, writable
