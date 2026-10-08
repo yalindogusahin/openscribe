@@ -76,6 +76,8 @@ SITE="$HELPER_DIR/site-packages"
 # 4. Install ML deps directly into the bundle's site-packages. CPU torch
 #    only — MPS is unstable for BS-Roformer (see StemSeparator notes).
 #    audio-separator pulls in onnxruntime + librosa.
+#    Basic Pitch 0.4.0 requires resampy <0.4.3, which imports pkg_resources.
+#    Setuptools 82 removed it; ship the known-working runtime version.
 echo "Installing dependencies (this can take 3-5 minutes)..."
 "$PY" -m pip install --upgrade pip
 "$PY" -m pip install --target="$SITE" \
@@ -86,7 +88,8 @@ echo "Installing dependencies (this can take 3-5 minutes)..."
     soundfile \
     tqdm \
     -r ../tools/media-helper/requirements.txt \
-    "basic-pitch[onnx]==0.4.0"
+    "basic-pitch[onnx]==0.4.0" \
+    "setuptools==81.0.0"
 
 # 5. Copy the helper scripts. media-helper reuses the shared site-packages
 #    (its MediaDownloader falls back to stem-helper/site-packages when its
@@ -115,6 +118,7 @@ cp ../tools/chord-helper/chord.py "$CHORD_HELPER_DIR/chord.py"
 # 6. Smoke test the bundled site-packages.
 echo "Smoke-testing helper..."
 PYTHONPATH="$SITE" "$PY" -c "
+import pkg_resources, resampy
 from audio_separator.separator import Separator
 import demucs, torch, numpy, soundfile
 import yt_dlp, yt_dlp_ejs
