@@ -98,7 +98,20 @@ APPLESCRIPT
 # Wait for Finder to flush .DS_Store, then detach.
 sync
 sleep 1
-hdiutil detach "/Volumes/$VOL_NAME" -quiet
+# Finder and Spotlight can briefly retain handles to the new volume.
+# Retry normal unmounts, then force-detach this disposable packaging image.
+detached=false
+for attempt in 1 2 3; do
+    if hdiutil detach "/Volumes/$VOL_NAME"; then
+        detached=true
+        break
+    fi
+    echo "Volume still busy; retrying detach ($attempt/3)..."
+    sleep 2
+done
+if [ "$detached" != true ]; then
+    hdiutil detach "/Volumes/$VOL_NAME" -force
+fi
 
 # 7. Compress to read-only UDZO for distribution.
 echo "Compressing to $DMG_NAME..."
