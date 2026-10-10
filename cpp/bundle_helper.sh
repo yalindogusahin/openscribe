@@ -82,7 +82,7 @@ echo "Installing dependencies (this can take 3-5 minutes)..."
 "$PY" -m pip install --upgrade pip
 "$PY" -m pip install --target="$SITE" \
     "audio-separator[cpu]" \
-    demucs \
+    "demucs==4.1.0" \
     torch \
     numpy \
     soundfile \
@@ -148,17 +148,19 @@ print('helper deps OK, torch', torch.__version__, 'yt-dlp', yt_dlp.version.__ver
 echo "Bundling models (this can take a few minutes on first run)..."
 TORCH_CACHE="$HELPER_DIR/torch_cache"
 ASEP_CACHE="$HELPER_DIR/audio_separator_models"
+HF_CACHE="$HELPER_DIR/huggingface_cache"
 MODEL_BUILD_CACHE="build/model-cache"
-mkdir -p "$MODEL_BUILD_CACHE/torch" "$MODEL_BUILD_CACHE/asep"
+mkdir -p "$MODEL_BUILD_CACHE/torch" "$MODEL_BUILD_CACHE/asep" "$MODEL_BUILD_CACHE/huggingface"
 
 PYTHONPATH="$SITE" \
 TORCH_HOME="$MODEL_BUILD_CACHE/torch" \
+HF_HOME="$(pwd)/$MODEL_BUILD_CACHE/huggingface" \
 "$PY" - "$MODEL_BUILD_CACHE/asep" <<'PY'
 import sys, os
 asep_dir = sys.argv[1]
 os.makedirs(asep_dir, exist_ok=True)
 
-# Demucs models live under TORCH_HOME/hub/checkpoints/
+# Demucs 4.1 stores named models in HF_HOME; legacy fallback uses TORCH_HOME.
 from demucs.pretrained import get_model
 for name in ("htdemucs", "htdemucs_6s"):
     print(f"  prefetching {name}...", flush=True)
@@ -175,8 +177,22 @@ PY
 
 # Move cached models into the bundle (rsync handles existing dirs).
 mkdir -p "$TORCH_CACHE/hub/checkpoints" "$ASEP_CACHE"
-cp -a "$MODEL_BUILD_CACHE/torch/hub/checkpoints/." "$TORCH_CACHE/hub/checkpoints/"
+if [ -d "$MODEL_BUILD_CACHE/torch/hub/checkpoints" ]; then
+    cp -a "$MODEL_BUILD_CACHE/torch/hub/checkpoints/." "$TORCH_CACHE/hub/checkpoints/"
+fi
+mkdir -p "$HF_CACHE"
+cp -a "$MODEL_BUILD_CACHE/huggingface/." "$HF_CACHE/"
 cp -a "$MODEL_BUILD_CACHE/asep/." "$ASEP_CACHE/"
+
+# Verify the shipped Demucs cache works without any network access.
+PYTHONPATH="$SITE" HF_HOME="$(pwd)/$HF_CACHE" HF_HUB_OFFLINE=1 \
+TORCH_HOME="$(pwd)/$TORCH_CACHE" "$PY" - <<'PY_OFFLINE'
+from demucs.pretrained import get_model
+for name in ("htdemucs", "htdemucs_6s"):
+    model = get_model("hf://" + name)
+    print("offline model OK:", name, flush=True)
+    del model
+PY_OFFLINE
 
 # 8. Strip caches and bytecode that bloat the bundle without runtime value.
 echo "Pruning caches..."

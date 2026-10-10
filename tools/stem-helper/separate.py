@@ -39,6 +39,16 @@ def _resolve_torch_home() -> None:
         os.environ["TORCH_HOME"] = str(cand)
 
 
+def _resolve_huggingface_home() -> None:
+    """Use the shipped Demucs 4.1 cache without writing to the signed bundle."""
+    if os.environ.get("HF_HOME"):
+        return
+    cache = Path(__file__).resolve().parent / "huggingface_cache"
+    if (cache / "hub").is_dir():
+        os.environ["HF_HOME"] = str(cache)
+        os.environ["HF_HUB_OFFLINE"] = "1"
+
+
 def _resolve_audio_separator_models() -> Path:
     """Where audio-separator should look for / download Roformer / MDX
     weights. The C++ caller pins this to ~/Library/Application Support/
@@ -287,6 +297,7 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     _resolve_torch_home()
+    _resolve_huggingface_home()
     _install_tqdm_hook()
 
     if args.model == "mel_band_roformer":
