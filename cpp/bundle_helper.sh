@@ -76,17 +76,34 @@ SITE="$HELPER_DIR/site-packages"
 # 4. Install ML deps directly into the bundle's site-packages. CPU torch
 #    only — MPS is unstable for BS-Roformer (see StemSeparator notes).
 #    audio-separator pulls in onnxruntime + librosa.
+#    Basic Pitch 0.4.0 requires resampy <0.4.3, which imports pkg_resources.
+#    Setuptools 82 removed it; ship the known-working runtime version.
 echo "Installing dependencies (this can take 3-5 minutes)..."
 "$PY" -m pip install --upgrade pip
 "$PY" -m pip install --target="$SITE" \
     "audio-separator[cpu]" \
-    demucs \
+    "demucs==4.1.0" \
     torch \
     numpy \
     soundfile \
     tqdm \
     -r ../tools/media-helper/requirements.txt \
-    "basic-pitch[onnx]==0.4.0"
+    "basic-pitch[onnx]==0.4.0" \
+    "setuptools==81.0.0" \
+    "imageio-ffmpeg==0.6.0"
+
+# Ship a portable FFmpeg executable for model setup and runtime decoding.
+mkdir -p "$RES/bin"
+PYTHONPATH="$SITE" "$PY" - "$RES/bin/ffmpeg" <<'PY_FFMPEG'
+import imageio_ffmpeg
+import os
+import shutil
+import sys
+shutil.copy2(imageio_ffmpeg.get_ffmpeg_exe(), sys.argv[1])
+os.chmod(sys.argv[1], 0o755)
+PY_FFMPEG
+export PATH="$(pwd)/$RES/bin:$PATH"
+ffmpeg -version >/dev/null
 
 # 5. Copy the helper scripts. media-helper reuses the shared site-packages
 #    (its MediaDownloader falls back to stem-helper/site-packages when its
@@ -115,6 +132,7 @@ cp ../tools/chord-helper/chord.py "$CHORD_HELPER_DIR/chord.py"
 # 6. Smoke test the bundled site-packages.
 echo "Smoke-testing helper..."
 PYTHONPATH="$SITE" "$PY" -c "
+import pkg_resources, resampy
 from audio_separator.separator import Separator
 import demucs, torch, numpy, soundfile
 import yt_dlp, yt_dlp_ejs
@@ -130,17 +148,19 @@ print('helper deps OK, torch', torch.__version__, 'yt-dlp', yt_dlp.version.__ver
 echo "Bundling models (this can take a few minutes on first run)..."
 TORCH_CACHE="$HELPER_DIR/torch_cache"
 ASEP_CACHE="$HELPER_DIR/audio_separator_models"
+HF_CACHE="$HELPER_DIR/huggingface_cache"
 MODEL_BUILD_CACHE="build/model-cache"
-mkdir -p "$MODEL_BUILD_CACHE/torch" "$MODEL_BUILD_CACHE/asep"
+mkdir -p "$MODEL_BUILD_CACHE/torch" "$MODEL_BUILD_CACHE/asep" "$MODEL_BUILD_CACHE/huggingface"
 
 PYTHONPATH="$SITE" \
 TORCH_HOME="$MODEL_BUILD_CACHE/torch" \
+HF_HOME="$(pwd)/$MODEL_BUILD_CACHE/huggingface" \
 "$PY" - "$MODEL_BUILD_CACHE/asep" <<'PY'
 import sys, os
 asep_dir = sys.argv[1]
 os.makedirs(asep_dir, exist_ok=True)
 
-# Demucs models live under TORCH_HOME/hub/checkpoints/
+# Demucs 4.1 stores named models in HF_HOME; legacy fallback uses TORCH_HOME.
 from demucs.pretrained import get_model
 for name in ("htdemucs", "htdemucs_6s"):
     print(f"  prefetching {name}...", flush=True)
@@ -149,14 +169,30 @@ for name in ("htdemucs", "htdemucs_6s"):
 # Roformer goes into audio_separator's model dir
 print("  prefetching mel_band_roformer (BS-Roformer)...", flush=True)
 from audio_separator.separator import Separator
-sep = Separator(output_dir="/tmp", model_file_dir=asep_dir)
-sep.load_model(model_filename="model_bs_roformer_ep_317_sdr_12.9755.ckpt")
+# Packaging needs the files, not a running inference model. Avoid MPS
+# initialization on GitHub's virtualized Apple Silicon runners.
+sep = Separator(output_dir="/tmp", model_file_dir=asep_dir, info_only=True)
+sep.download_model_and_data(model_filename="model_bs_roformer_ep_317_sdr_12.9755.ckpt")
 PY
 
 # Move cached models into the bundle (rsync handles existing dirs).
 mkdir -p "$TORCH_CACHE/hub/checkpoints" "$ASEP_CACHE"
-cp -a "$MODEL_BUILD_CACHE/torch/hub/checkpoints/." "$TORCH_CACHE/hub/checkpoints/"
+if [ -d "$MODEL_BUILD_CACHE/torch/hub/checkpoints" ]; then
+    cp -a "$MODEL_BUILD_CACHE/torch/hub/checkpoints/." "$TORCH_CACHE/hub/checkpoints/"
+fi
+mkdir -p "$HF_CACHE"
+cp -a "$MODEL_BUILD_CACHE/huggingface/." "$HF_CACHE/"
 cp -a "$MODEL_BUILD_CACHE/asep/." "$ASEP_CACHE/"
+
+# Verify the shipped Demucs cache works without any network access.
+PYTHONPATH="$SITE" HF_HOME="$(pwd)/$HF_CACHE" HF_HUB_OFFLINE=1 \
+TORCH_HOME="$(pwd)/$TORCH_CACHE" "$PY" - <<'PY_OFFLINE'
+from demucs.pretrained import get_model
+for name in ("htdemucs", "htdemucs_6s"):
+    model = get_model("hf://" + name)
+    print("offline model OK:", name, flush=True)
+    del model
+PY_OFFLINE
 
 # 8. Strip caches and bytecode that bloat the bundle without runtime value.
 echo "Pruning caches..."

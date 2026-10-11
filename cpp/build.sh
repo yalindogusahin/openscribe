@@ -57,6 +57,11 @@ mkdir -p "$BUNDLE/Contents/Resources/ireal-helper"
 cp ../tools/ireal-helper/library.py ../tools/ireal-helper/THIRD_PARTY_NOTICES.md "$BUNDLE/Contents/Resources/ireal-helper/"
 mkdir -p "$BUNDLE/Contents/Resources/transcribe-helper"
 cp ../tools/transcribe-helper/transcribe.py "$BUNDLE/Contents/Resources/transcribe-helper/transcribe.py"
+mkdir -p "$BUNDLE/Contents/Resources/media-helper"
+cp ../tools/media-helper/download.py "$BUNDLE/Contents/Resources/media-helper/download.py"
+if [ -d "$BUNDLE/Contents/Resources/stem-helper" ]; then
+    cp ../tools/stem-helper/separate.py "$BUNDLE/Contents/Resources/stem-helper/separate.py"
+fi
 cp build/default.metallib "$BUNDLE/Contents/Resources/default.metallib"
 if [ -f AppIcon.icns ]; then
     cp AppIcon.icns "$BUNDLE/Contents/Resources/AppIcon.icns"

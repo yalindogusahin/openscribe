@@ -153,7 +153,7 @@ def main() -> int:
         if not args.cookies_from_browser and (
             "login required" in msg.lower() or "rate-limit" in msg.lower()
         ):
-            msg += " — enable a browser under Settings → Instagram/YouTube Login."
+            msg += " — enable a browser under Settings → Media Login."
         fatal(msg, 3)
     except KeyboardInterrupt:
         return 130

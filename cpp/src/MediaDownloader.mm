@@ -2,8 +2,7 @@
 #import <CommonCrypto/CommonDigest.h>
 
 // Matches SettingsWindowController's kPrefCookiesBrowser — duplicated (not
-// shared via header) so this file stays a self-contained, easily-excluded
-// unit; see .git/info/exclude.
+// shared via header) so this file stays self-contained.
 static NSString* const kPrefCookiesBrowser = @"openscribe.cookiesBrowser";
 
 @implementation MediaDownloader {
